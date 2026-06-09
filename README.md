@@ -70,3 +70,23 @@ Do NOT commit real secrets. Keep `.env` out of version control (already added to
 
 If you want, I can pin exact package versions and add a `pip freeze > requirements.txt` output for reproducible installs.
 
+## Deploying to Render
+
+Render detects Python services and installs dependencies from `requirements.txt`. To deploy this backend as a Render "Web Service":
+
+1. In the Render dashboard, create a new Web Service and connect your repo.
+2. Set the **Start Command** to the Procfile command or add a `Procfile` (recommended). This repo includes a `Procfile` with the command:
+
+```
+web: gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
+```
+
+3. Ensure environment variables (e.g., `DATABASE_URL`, `SECRET_KEY`) are configured in the Render service settings, or add a `.env` locally for development.
+
+4. Use the required build and runtime settings: Python 3.10+ and the `requirements.txt` present at the repo root (already included).
+
+Notes:
+- `gunicorn` is included in `requirements.txt` and uses the Uvicorn worker class for ASGI compatibility.
+- Render exposes the port via the `PORT` environment variable — the Procfile uses `$PORT`.
+- Optionally, you can create a `render.yaml` to codify service settings for Infrastructure-as-Code.
+
