@@ -83,6 +83,8 @@ web: gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
 
 3. Ensure environment variables (e.g., `DATABASE_URL`, `SECRET_KEY`) are configured in the Render service settings, or add a `.env` locally for development.
 
+	If Render still shows `gunicorn app:app`, set `GUNICORN_CMD_ARGS=-k uvicorn.workers.UvicornWorker` in the service environment. This repo's `render.yaml` includes that setting.
+
 4. Use the required build and runtime settings: Python 3.10+ and the `requirements.txt` present at the repo root (already included).
 
 Notes:
