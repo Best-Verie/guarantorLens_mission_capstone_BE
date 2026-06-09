@@ -72,23 +72,19 @@ If you want, I can pin exact package versions and add a `pip freeze > requiremen
 
 ## Deploying to Render
 
-Render detects Python services and installs dependencies from `requirements.txt`. To deploy this backend as a Render "Web Service":
+Render detects Python services and installs dependencies from `requirements.txt`.
 
-1. In the Render dashboard, create a new Web Service and connect your repo.
-2. Set the **Start Command** to the Procfile command or add a `Procfile` (recommended). This repo includes a `Procfile` with the command:
+For this repo, the only deployment-side file you need is `gunicorn.conf.py` at the project root. It forces Gunicorn to use the Uvicorn worker, which FastAPI requires.
 
-```
-web: gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
-```
+Recommended Render setup:
 
-3. Ensure environment variables (e.g., `DATABASE_URL`, `SECRET_KEY`) are configured in the Render service settings, or add a `.env` locally for development.
-
-	If Render still shows `gunicorn app:app`, set `GUNICORN_CMD_ARGS=-k uvicorn.workers.UvicornWorker` in the service environment. This repo's `render.yaml` includes that setting.
-
-4. Use the required build and runtime settings: Python 3.10+ and the `requirements.txt` present at the repo root (already included).
+1. Create a Render Web Service and connect this repository.
+2. Use `gunicorn app:app` as the start command if Render asks for one. The repo-level `gunicorn.conf.py` will still force the correct ASGI worker.
+3. Set environment variables such as `DATABASE_URL` and `SECRET_KEY` in Render's dashboard.
+4. Keep `requirements.txt` at the repo root so Render can install the dependencies.
 
 Notes:
-- `gunicorn` is included in `requirements.txt` and uses the Uvicorn worker class for ASGI compatibility.
-- Render exposes the port via the `PORT` environment variable — the Procfile uses `$PORT`.
-- Optionally, you can create a `render.yaml` to codify service settings for Infrastructure-as-Code.
+- `gunicorn.conf.py` is the repo-side fix for the sync-worker error.
+- `app/__init__.py` exports the FastAPI app so `gunicorn app:app` resolves correctly.
+- If you want infrastructure-as-code later, you can add a new `render.yaml`, but it is not required for this setup.
 
