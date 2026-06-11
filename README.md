@@ -58,7 +58,7 @@ DEBUG=True
 
 Render auto-detects Python services and installs dependencies from `requirements.txt`.
 
-For this repo, the only deployment-side file you need is `gunicorn.conf.py` at the project root. It forces Gunicorn to use the Uvicorn worker, which FastAPI requires.
+For this repo, the only deployment-side file needed is `gunicorn.conf.py` at the project root. It forces Gunicorn to use the Uvicorn worker, which FastAPI requires.
 
 **Recommended Render setup:**
 
