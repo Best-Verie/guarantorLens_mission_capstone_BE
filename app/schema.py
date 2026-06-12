@@ -1,6 +1,90 @@
 """Pydantic request/response models (shape the Swagger docs)."""
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# --- auth -------------------------------------------------------------------
+
+ROLES = {"loan_officer", "credit_staff", "branch_manager"}
+
+
+def _normalize_email(value: str) -> str:
+    value = value.strip().lower()
+    local, _, domain = value.partition("@")
+    if not local or "." not in domain:
+        raise ValueError("Enter a valid email address.")
+    return value
+
+
+class RegisterRequest(BaseModel):
+    full_name: str = Field(..., min_length=2, max_length=120, example="Beatrice Uwase")
+    email: str = Field(..., example="b.uwase@umwalimusacco.rw")
+    role: str = Field("loan_officer", example="loan_officer")
+    password: str = Field(..., min_length=8, max_length=128, example="a-strong-password")
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, v: str) -> str:
+        if v not in ROLES:
+            raise ValueError(f"role must be one of {sorted(ROLES)}")
+        return v
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., example="b.uwase@umwalimusacco.rw")
+    password: str = Field(..., example="a-strong-password")
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class UserOut(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    role: str
+
+    model_config = {"from_attributes": True}
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(..., example="b.uwase@umwalimusacco.rw")
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+    # Only populated when DEBUG is on, so the flow is testable without email set up.
+    reset_token: Optional[str] = None
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., example="paste-the-token-from-the-email-link")
+    new_password: str = Field(..., min_length=8, max_length=128, example="a-new-strong-password")
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+# --- risk assessment --------------------------------------------------------
 
 
 class AssessRequest(BaseModel):
