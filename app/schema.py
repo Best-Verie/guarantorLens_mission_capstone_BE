@@ -122,6 +122,18 @@ class AssessResponse(BaseModel):
     network: NetworkInfo
 
 
+class MemberProfile(BaseModel):
+    member_id: str
+    branch: Optional[str] = None
+    savings: Optional[float] = None
+    salary: Optional[float] = None
+    ever_defaulted: bool
+    default_date: Optional[str] = None
+    loans_backed: int            # guarantees this member has given (out-degree)
+    total_connections: int       # degree in the guarantee graph
+    community_default_rate: float
+
+
 class MemberOut(BaseModel):
     member_id: int
     branch: Optional[str] = None
