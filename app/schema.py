@@ -134,6 +134,44 @@ class MemberProfile(BaseModel):
     community_default_rate: float
 
 
+class LoanRef(BaseModel):
+    loan_key: str
+    amount: float
+    disb_date: Optional[str] = None
+    outcome: str
+    guarantors: List[str] = []
+
+
+class BackedLoan(BaseModel):
+    loan_key: str
+    borrower: str
+    outcome: str
+
+
+class NetNode(BaseModel):
+    id: str
+    role: str            # "self" | "backer" | "backed"
+    ever_defaulted: bool
+    loans_backed: int
+
+
+class NetEdge(BaseModel):
+    source: str          # guarantor
+    target: str          # borrower
+
+
+class MemberNetwork(BaseModel):
+    nodes: List[NetNode]
+    edges: List[NetEdge]
+
+
+class MemberDetail(MemberProfile):
+    loans: List[LoanRef] = []                 # loans where this member is the borrower
+    backers: List[str] = []                   # members who guarantee this member's loans
+    guarantees_given: List[BackedLoan] = []   # loans this member guarantees
+    network: MemberNetwork
+
+
 class MemberOut(BaseModel):
     member_id: int
     branch: Optional[str] = None
