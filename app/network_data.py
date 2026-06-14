@@ -91,3 +91,60 @@ def member_detail(member_id: str, members: dict) -> dict:
         "guarantees_given": guarantees_given,
         "network": {"nodes": list(nodes.values()), "edges": edges},
     }
+
+
+MAX_NEIGHBOURHOOD = 50
+
+
+def neighborhood(member_id: str, members: dict) -> dict:
+    """A member's 1-hop neighborhood with every guarantee edge among those members,
+    so the graph shows real interconnections, not just a star."""
+    own_loans = BY_BORROWER.get(member_id, [])
+    backed = BY_GUARANTOR.get(member_id, [])
+
+    backers = []
+    for ln in own_loans:
+        backers.extend(ln.get("guarantors", []))
+    backed_borrowers = [ln["borrower"] for ln in backed]
+
+    nbr = [member_id]
+    for m in backers + backed_borrowers:
+        if m not in nbr:
+            nbr.append(m)
+    nbr = nbr[:MAX_NEIGHBOURHOOD]
+    nbr_set = set(nbr)
+
+    def role(mid):
+        if mid == member_id:
+            return "self"
+        if mid in backers:
+            return "backer"
+        return "backed"
+
+    def node(mid):
+        m = members.get(mid, {})
+        return {
+            "id": mid,
+            "role": role(mid),
+            "ever_defaulted": bool(m.get("ever_defaulted", 0)),
+            "loans_backed": int(m.get("loans_backed", 0)),
+        }
+
+    # All guarantee edges where both endpoints are in the neighborhood.
+    cand = {}
+    for m in nbr_set:
+        for ln in BY_BORROWER.get(m, []):
+            cand[ln["loan_key"]] = ln
+        for ln in BY_GUARANTOR.get(m, []):
+            cand[ln["loan_key"]] = ln
+    edges, seen = [], set()
+    for ln in cand.values():
+        b = ln["borrower"]
+        if b not in nbr_set:
+            continue
+        for g in ln.get("guarantors", []):
+            if g in nbr_set and (g, b) not in seen:
+                seen.add((g, b))
+                edges.append({"source": g, "target": b})
+
+    return {"center": member_id, "nodes": [node(m) for m in nbr], "edges": edges}

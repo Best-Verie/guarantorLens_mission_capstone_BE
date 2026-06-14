@@ -3,7 +3,9 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://guarantor_lens_user:frJWIoTqOWHQrQPe9pweBFG6Uz1KRYPB@dpg-d8k6g0kvikkc73bt89fg-a.oregon-postgres.render.com/guarantor_lens")
+# Read the connection string from the environment. No credentials are hardcoded.
+# Falls back to a local SQLite file so the app runs locally without any setup.
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./guarantorlens.db")
 # Render/Heroku give "postgres://"; SQLAlchemy needs "postgresql+psycopg2://"
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)

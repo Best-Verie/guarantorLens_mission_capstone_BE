@@ -55,3 +55,6 @@ instance/
 
 # Logs
 *.log
+
+# Local SQLite database
+*.db

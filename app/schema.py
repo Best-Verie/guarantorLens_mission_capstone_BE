@@ -165,6 +165,12 @@ class MemberNetwork(BaseModel):
     edges: List[NetEdge]
 
 
+class NetworkView(BaseModel):
+    center: str
+    nodes: List[NetNode]
+    edges: List[NetEdge]
+
+
 class MemberDetail(MemberProfile):
     loans: List[LoanRef] = []                 # loans where this member is the borrower
     backers: List[str] = []                   # members who guarantee this member's loans

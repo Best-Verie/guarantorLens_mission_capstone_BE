@@ -4,9 +4,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from . import network_data, scoring
 from .auth import get_current_user
 from .models import User
-from .schema import MemberDetail
+from .schema import MemberDetail, NetworkView
 
 router = APIRouter(tags=["members"])
+
+
+@router.get("/network/{member_id}", response_model=NetworkView)
+def get_network(member_id: str, user: User = Depends(get_current_user)):
+    if member_id not in scoring.MEMBERS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    return network_data.neighborhood(member_id, scoring.MEMBERS)
 
 
 @router.get("/member/{member_id}", response_model=MemberDetail)
