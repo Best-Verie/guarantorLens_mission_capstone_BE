@@ -5,3 +5,11 @@ psycopg2-binary
 python-dotenv
 gunicorn
 PyJWT
+
+# Model serving (assess-risk). scikit-learn is pinned to the training version so
+# the saved model unpickles correctly.
+scikit-learn==1.6.1
+xgboost
+joblib
+numpy
+pandas

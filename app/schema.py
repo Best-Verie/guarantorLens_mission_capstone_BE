@@ -88,13 +88,15 @@ class MessageResponse(BaseModel):
 
 
 class AssessRequest(BaseModel):
-    member_id: Optional[int] = Field(None, example=1)
-    amount: float = Field(..., example=2100000, description="Disbursement amount (RWF)")
-    rate: float = Field(13, example=13, description="Interest rate (%)")
-    savings: float = Field(0, example=395806, description="Savings balance (RWF)")
-    salary: Optional[float] = Field(None, example=174312, description="Monthly salary if on file")
-    disbursement_date: Optional[str] = Field(None, example="2023-09-19", description="YYYY-MM-DD")
-    guarantor_ids: List[int] = Field(default_factory=list, example=[52, 24, 50])
+    borrower_id: Optional[str] = Field(None, example="Gasabo-335",
+                                       description="Member id, used for the borrower's community history")
+    amount: float = Field(..., example=1323000, description="Disbursement amount (RWF)")
+    savings: float = Field(0, example=32036, description="Savings balance (RWF)")
+    salary: Optional[float] = Field(None, example=91617, description="Monthly salary if on file")
+    disbursement_date: Optional[str] = Field(None, example="2023-02-21",
+                                             description="YYYY-MM-DD; defaults to today")
+    guarantor_ids: List[str] = Field(default_factory=list,
+                                     example=["Gasabo-189", "Gasabo-664", "Gasabo-366"])
 
 
 class Reason(BaseModel):
@@ -107,7 +109,7 @@ class Reason(BaseModel):
 class NetworkInfo(BaseModel):
     n_guarantors: int
     guarantors_with_prior_default: int
-    guarantor_ids: List[int]
+    guarantor_ids: List[str]
 
 
 class AssessResponse(BaseModel):
@@ -116,6 +118,7 @@ class AssessResponse(BaseModel):
     probability: float
     source: str              # "model" | "heuristic"
     reasons: List[Reason]
+    flags: List[str]         # plain-language guarantor-network flags
     network: NetworkInfo
 
 

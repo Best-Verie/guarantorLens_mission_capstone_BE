@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db import Base, engine
 from . import models  # noqa: F401  (registers tables on Base)
 from .auth import router as auth_router
+from .risk import router as risk_router
 
 
 @asynccontextmanager
@@ -33,6 +34,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(risk_router)
 
 
 @app.get("/health")
