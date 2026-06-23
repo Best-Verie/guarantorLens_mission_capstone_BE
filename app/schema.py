@@ -112,14 +112,48 @@ class NetworkInfo(BaseModel):
     guarantor_ids: List[str]
 
 
+class ShapContribution(BaseModel):
+    feature: str
+    label: str               # friendly name
+    value: float             # signed SHAP value (log-odds); >0 raises risk
+    direction: str           # "up" | "down"
+
+
 class AssessResponse(BaseModel):
     risk_score: int          # 0-100
     band: str                # "Low" | "Medium" | "High"
     probability: float
     source: str              # "model" | "heuristic"
     reasons: List[Reason]
+    shap: List[ShapContribution] = []   # model-faithful per-feature contributions
     flags: List[str]         # plain-language guarantor-network flags
     network: NetworkInfo
+
+
+# --- insights --------------------------------------------------------------
+
+class WatchlistItem(BaseModel):
+    loan_key: str
+    borrower: str
+    branch: Optional[str] = None
+    amount: float
+    days_in_arrears: int
+    backed_by_defaulter: bool
+
+
+class SuperGuarantor(BaseModel):
+    member_id: str
+    branch: Optional[str] = None
+    loans_backed: int
+    ever_defaulted: bool
+    bad_loans_backed: int
+
+
+class CommunityStat(BaseModel):
+    community_id: str
+    branch: Optional[str] = None
+    size: int
+    default_rate: float
 
 
 class MemberProfile(BaseModel):

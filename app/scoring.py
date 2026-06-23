@@ -84,6 +84,48 @@ def _build_features(amount, savings, salary, disb, guarantor_ids):
     }
 
 
+FRIENDLY = {
+    "log_amount": "Loan amount",
+    "savings": "Savings",
+    "salary": "Salary",
+    "loan_to_savings": "Loan size vs savings",
+    "loan_to_salary": "Loan size vs salary",
+    "n_guarantors": "Number of guarantors",
+    "g_prior_default_rate": "Guarantors who defaulted before",
+    "g_load_asof_mean": "Guarantors' average load",
+    "g_load_asof_max": "Most loaded guarantor",
+    "g_mean_savings": "Guarantors' savings",
+    "g_mean_salary": "Guarantors' salary",
+}
+
+
+def _shap(feats: dict, top: int = 6):
+    """Per-feature SHAP contributions from the XGBoost model (native tree SHAP).
+    Returns the strongest contributors, signed: 'up' raises risk, 'down' lowers it."""
+    try:
+        import pandas as pd
+        import xgboost
+
+        X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
+        imp = MODEL.named_steps["imp"]
+        clf = MODEL.named_steps["clf"]
+        Xi = imp.transform(X)
+        contribs = clf.get_booster().predict(
+            xgboost.DMatrix(Xi, feature_names=FEATURES), pred_contribs=True
+        )[0]
+        out = []
+        for i, f in enumerate(FEATURES):  # last entry is the bias term, skipped
+            v = float(contribs[i])
+            out.append(
+                {"feature": f, "label": FRIENDLY.get(f, f), "value": round(v, 4),
+                 "direction": "up" if v > 0 else "down"}
+            )
+        out.sort(key=lambda d: abs(d["value"]), reverse=True)
+        return out[:top]
+    except Exception:
+        return []
+
+
 def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id):
     flags, reasons = [], []
 
@@ -159,11 +201,13 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
     flags, reasons = _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id)
     n_prior = sum(1 for g in guarantor_ids if _member(g).get("ever_defaulted") == 1)
 
+    shap = []
     if MODEL is not None:
         import pandas as pd
         feats = _build_features(amount, savings, salary, disb, guarantor_ids)
         X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
         proba = float(MODEL.predict_proba(X)[0][1])
+        shap = _shap(feats)
         source = "model"
     else:
         proba = _heuristic(amount, savings, salary, guarantor_ids, borrower_id)
@@ -175,6 +219,7 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
         "probability": round(proba, 4),
         "source": source,
         "reasons": reasons,
+        "shap": shap,
         "flags": flags,
         "network": {
             "n_guarantors": len(guarantor_ids),

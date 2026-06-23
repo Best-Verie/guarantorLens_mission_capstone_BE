@@ -148,3 +148,64 @@ def neighborhood(member_id: str, members: dict) -> dict:
                 edges.append({"source": g, "target": b})
 
     return {"center": member_id, "nodes": [node(m) for m in nbr], "edges": edges}
+
+
+# --- portfolio insights -----------------------------------------------------
+
+def watchlist(members: dict, min_days: int = 90, limit: int = 300) -> list:
+    """Active loans that are min_days+ in arrears, most at risk first."""
+    items = []
+    for ln in LOANS:
+        if ln.get("payment_status", "").lower() == "active" and ln.get("days_in_arrears", 0) >= min_days:
+            gids = ln.get("guarantors", [])
+            items.append({
+                "loan_key": ln["loan_key"],
+                "borrower": ln["borrower"],
+                "branch": ln.get("branch"),
+                "amount": ln["amount"],
+                "days_in_arrears": ln.get("days_in_arrears", 0),
+                "backed_by_defaulter": any(members.get(g, {}).get("ever_defaulted") == 1 for g in gids),
+            })
+    items.sort(key=lambda x: x["days_in_arrears"], reverse=True)
+    return items[:limit]
+
+
+def super_guarantors(members: dict, limit: int = 20) -> list:
+    """Members backing the most loans (most systemic exposure if they fail)."""
+    bad_backed = defaultdict(int)
+    for ln in LOANS:
+        if ln.get("label") == 1:
+            for g in ln.get("guarantors", []):
+                bad_backed[g] += 1
+    rows = []
+    for mid, m in members.items():
+        lb = int(m.get("loans_backed", 0))
+        if lb <= 0:
+            continue
+        rows.append({
+            "member_id": mid,
+            "branch": m.get("branch"),
+            "loans_backed": lb,
+            "ever_defaulted": bool(m.get("ever_defaulted", 0)),
+            "bad_loans_backed": int(bad_backed.get(mid, 0)),
+        })
+    rows.sort(key=lambda x: x["loans_backed"], reverse=True)
+    return rows[:limit]
+
+
+def communities(members: dict, min_size: int = 5, limit: int = 30) -> list:
+    """Guarantee communities ranked by their historical default rate."""
+    groups = defaultdict(list)
+    for m in members.values():
+        cid = m.get("community_id")
+        if cid:
+            groups[cid].append(m)
+    out = []
+    for cid, ms in groups.items():
+        size = len(ms)
+        if size < min_size:
+            continue
+        dr = sum(1 for x in ms if x.get("ever_defaulted") == 1) / size
+        out.append({"community_id": cid, "branch": ms[0].get("branch"), "size": size, "default_rate": round(dr, 4)})
+    out.sort(key=lambda x: x["default_rate"], reverse=True)
+    return out[:limit]
