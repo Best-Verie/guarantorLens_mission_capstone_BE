@@ -1,10 +1,13 @@
-"""Loads the trained honest model and the member/network table, and scores a loan.
+"""Loads the trained ("honest") model and the member/network table, and scores a loan.
 
-The model is the leakage-controlled ("honest") model exported from notebook 04.
-Its features can all be rebuilt for a single new loan from the member table, so
-no graph retraining is needed at serve time. If the model cannot be loaded
-(missing file or library), the endpoint falls back to a transparent heuristic so
-the API still responds.
+This loader is BUNDLE-DRIVEN: it builds exactly the features listed in the model
+bundle ("features"), so it works with either the master export or the simple
+notebook's export without code changes. Any feature it cannot rebuild at serve
+time is filled from the bundle's "medians" (the training medians). Risk bands
+come from the bundle's "bands" (percentile-based) when present.
+
+If the model cannot be loaded (missing file or library), the endpoint falls back
+to a transparent heuristic so the API still responds.
 """
 import json
 import os
@@ -14,29 +17,56 @@ from datetime import date
 ARTIFACT_DIR = os.path.join(os.path.dirname(__file__), "artifacts")
 MODEL_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_serving.joblib")
 MEMBERS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_members.json")
+LOANS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_loans.json")
 
 _DEFAULT_BANDS = {"medium": 0.30, "high": 0.60}
 _DEFAULT_FLAGS = {"over_committed_loads": 8, "high_default_community": 0.12}
+
+
+def _mkey(m):
+    """Member id under either the master ('member_id') or simple ('member') schema."""
+    return m.get("member_id") if m.get("member_id") is not None else m.get("member")
 
 
 def _load():
     members = {}
     try:
         with open(MEMBERS_PATH) as fh:
-            members = {m["member_id"]: m for m in json.load(fh)}
+            members = {_mkey(m): m for m in json.load(fh) if _mkey(m) is not None}
     except Exception:
         members = {}
+
+    # borrower -> sorted list of their loan disbursement dates, for as-of prior-loan counts
+    loans_by_borrower = {}
+    try:
+        with open(LOANS_PATH) as fh:
+            for ln in json.load(fh):
+                bid = ln.get("borrower") if ln.get("borrower") is not None else ln.get("member")
+                d = ln.get("disb_date") or ln.get("disb")
+                if bid is None or not d:
+                    continue
+                try:
+                    loans_by_borrower.setdefault(bid, []).append(date.fromisoformat(str(d)[:10]))
+                except Exception:
+                    pass
+        for v in loans_by_borrower.values():
+            v.sort()
+    except Exception:
+        loans_by_borrower = {}
+
     try:
         import joblib
         bundle = joblib.load(MODEL_PATH)
-        return (bundle["model"], bundle["features"], members,
-                bundle.get("bands", _DEFAULT_BANDS),
+        return (bundle["model"], bundle["features"], members, loans_by_borrower,
+                bundle.get("bands") or _DEFAULT_BANDS,
+                bundle.get("medians", {}),
                 bundle.get("flag_thresholds", _DEFAULT_FLAGS), "model")
     except Exception:
-        return (None, None, members, _DEFAULT_BANDS, _DEFAULT_FLAGS, "heuristic")
+        return (None, None, members, loans_by_borrower,
+                _DEFAULT_BANDS, {}, _DEFAULT_FLAGS, "heuristic")
 
 
-MODEL, FEATURES, MEMBERS, BANDS, FLAG_TH, _LOAD_SOURCE = _load()
+MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE = _load()
 
 
 def _member(mid):
@@ -55,33 +85,78 @@ def _band(p: float) -> str:
     return "Low"
 
 
-def _build_features(amount, savings, salary, disb, guarantor_ids):
-    """Rebuild the honest model's features for one loan. Matches notebook 04."""
+def _prior_default(mid, disb) -> float:
+    """1.0 if this member defaulted before `disb` (or has ever defaulted if no date)."""
+    m = _member(mid)
+    dt = m.get("default_date")
+    if dt:
+        try:
+            return 1.0 if date.fromisoformat(dt) < disb else 0.0
+        except Exception:
+            pass
+    return 1.0 if m.get("ever_defaulted") == 1 else 0.0
+
+
+def _prior_loans(borrower_id, disb) -> int:
+    """How many loans this borrower already had before `disb` (as-of, no leakage)."""
+    if not borrower_id:
+        return 0
+    return sum(1 for d in LOANS_BY_BORROWER.get(borrower_id, []) if d < disb)
+
+
+def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id):
+    """Compute one feature for a single loan. Returns None when it cannot be built
+    (the caller then fills it from the training medians)."""
     import numpy as np
 
-    loads = [bisect_left(_guarantee_dates(g), disb) for g in guarantor_ids] or [0]
-
-    def prior(g):
-        dt = _member(g).get("default_date")
-        return 1.0 if dt and date.fromisoformat(dt) < disb else 0.0
-
-    sav = [_member(g)["savings"] for g in guarantor_ids if _member(g).get("savings") is not None]
-    sal = [_member(g)["salary"] for g in guarantor_ids if _member(g).get("salary") is not None]
+    g = guarantor_ids
+    sav = [_member(x)["savings"] for x in g if _member(x).get("savings") is not None]
+    sal = [_member(x)["salary"] for x in g if _member(x).get("salary") is not None]
     savings = savings or 0.0
     salary = salary or 0.0
-    return {
-        "log_amount": float(np.log1p(amount)),
-        "savings": float(savings),
-        "salary": float(salary),
-        "loan_to_savings": amount / (savings + 1),
-        "loan_to_salary": amount / (salary + 1),
-        "n_guarantors": len(guarantor_ids),
-        "g_prior_default_rate": float(np.mean([prior(g) for g in guarantor_ids])) if guarantor_ids else 0.0,
-        "g_load_asof_mean": float(np.mean(loads)),
-        "g_load_asof_max": float(np.max(loads)),
-        "g_mean_savings": float(np.mean(sav)) if sav else float("nan"),
-        "g_mean_salary": float(np.mean(sal)) if sal else float("nan"),
-    }
+
+    if name == "log_amount":
+        return float(np.log1p(amount))
+    if name == "savings":
+        return float(savings)
+    if name == "salary":
+        return float(salary)
+    if name == "loan_to_savings":
+        return amount / (savings + 1)
+    if name == "loan_to_salary":
+        return amount / (salary + 1)
+    if name == "n_guarantors":
+        return len(g)
+    if name == "g_mean_savings":
+        return float(np.mean(sav)) if sav else None
+    if name == "g_mean_salary":
+        return float(np.mean(sal)) if sal else None
+    if name == "g_prior_default_rate":
+        return float(np.mean([_prior_default(x, disb) for x in g])) if g else 0.0
+    if name in ("g_load_asof_mean", "g_load_asof_max"):
+        loads = [bisect_left(_guarantee_dates(x), disb) for x in g] or [0]
+        return float(np.mean(loads)) if name.endswith("mean") else float(np.max(loads))
+    if name == "b_prior_loans":
+        return float(_prior_loans(borrower_id, disb))
+    if name == "b_prior_writeoff":
+        return _prior_default(borrower_id, disb) if borrower_id else 0.0
+    if name == "b_account_age":
+        m = _member(borrower_id)
+        if m.get("account_age_days") is not None:
+            return float(m["account_age_days"])
+        return None  # no opening date stored -> impute from medians
+    return None
+
+
+def _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id=None):
+    """Build the bundle's feature vector for one loan, imputing gaps from medians."""
+    out = {}
+    for f in FEATURES:
+        v = _feat_value(f, amount, savings, salary, disb, guarantor_ids, borrower_id)
+        if v is None or (isinstance(v, float) and v != v):  # None or NaN
+            v = float(MEDIANS.get(f, 0.0))
+        out[f] = v
+    return out
 
 
 FRIENDLY = {
@@ -96,12 +171,15 @@ FRIENDLY = {
     "g_load_asof_max": "Most loaded guarantor",
     "g_mean_savings": "Guarantors' savings",
     "g_mean_salary": "Guarantors' salary",
+    "b_prior_loans": "Borrower's past loans",
+    "b_prior_writeoff": "Borrower defaulted before",
+    "b_account_age": "Borrower account age",
 }
 
 
 def _shap(feats: dict, top: int = 6):
-    """Per-feature SHAP contributions from the XGBoost model (native tree SHAP).
-    Returns the strongest contributors, signed: 'up' raises risk, 'down' lowers it."""
+    """Per-feature contributions from a tree model (native tree SHAP).
+    Returns [] for non-tree models (e.g. calibrated logistic regression)."""
     try:
         import pandas as pd
         import xgboost
@@ -218,7 +296,7 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
     shap = []
     if MODEL is not None:
         import pandas as pd
-        feats = _build_features(amount, savings, salary, disb, guarantor_ids)
+        feats = _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id)
         X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
         proba = float(MODEL.predict_proba(X)[0][1])
         shap = _shap(feats)
