@@ -201,6 +201,20 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
     flags, reasons = _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id)
     n_prior = sum(1 for g in guarantor_ids if _member(g).get("ever_defaulted") == 1)
 
+    # New-member transparency: assess anyway, but say plainly what has no history yet.
+    new_borrower = bool(borrower_id) and borrower_id not in MEMBERS
+    new_guarantors = [g for g in guarantor_ids if g not in MEMBERS]
+    new_members = ([borrower_id] if new_borrower else []) + new_guarantors
+    if new_borrower or new_guarantors:
+        bits = []
+        if new_borrower:
+            bits.append("the borrower is new to the system")
+        if new_guarantors:
+            bits.append(f"{len(new_guarantors)} guarantor(s) have no record yet (" + ", ".join(new_guarantors) + ")")
+        flags[:] = [f for f in flags if f != "No notable guarantor-network flags"]
+        flags.insert(0, "New member: " + "; ".join(bits) + ". Score uses the details you entered, "
+                        "so treat it as a first estimate and confirm those details.")
+
     shap = []
     if MODEL is not None:
         import pandas as pd
@@ -225,5 +239,6 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
             "n_guarantors": len(guarantor_ids),
             "guarantors_with_prior_default": n_prior,
             "guarantor_ids": guarantor_ids,
+            "new_members": new_members,
         },
     }
