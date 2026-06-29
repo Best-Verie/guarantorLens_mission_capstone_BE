@@ -156,6 +156,16 @@ class CommunityStat(BaseModel):
     default_rate: float
 
 
+class EarlyWarningItem(BaseModel):
+    loan_key: str
+    borrower: str
+    branch: Optional[str] = None
+    amount: float
+    days_in_arrears: int
+    risk_score: int
+    band: str
+
+
 class MemberProfile(BaseModel):
     member_id: str
     branch: Optional[str] = None

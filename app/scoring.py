@@ -85,6 +85,28 @@ def _band(p: float) -> str:
     return "Low"
 
 
+def score_loan(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
+    """Lightweight scorer for lists (e.g. the early-warning view): returns (probability, band).
+    No flags or SHAP, so it stays fast over hundreds of loans."""
+    try:
+        disb = date.fromisoformat(str(disb_date)[:10]) if disb_date else date.today()
+    except Exception:
+        disb = date.today()
+    guarantor_ids = guarantor_ids or []
+    p = None
+    if MODEL is not None:
+        try:
+            import pandas as pd
+            feats = _build_features(amount, savings or 0.0, salary, disb, guarantor_ids, borrower_id)
+            X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
+            p = float(MODEL.predict_proba(X)[0][1])
+        except Exception:
+            p = None  # model could not score (e.g. version mismatch) -> fall back
+    if p is None:
+        p = _heuristic(amount, savings or 0.0, salary, guarantor_ids, borrower_id)
+    return p, _band(p)
+
+
 def _prior_default(mid, disb) -> float:
     """1.0 if this member defaulted before `disb` (or has ever defaulted if no date)."""
     m = _member(mid)
