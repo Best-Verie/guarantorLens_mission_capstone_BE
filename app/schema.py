@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 # --- auth -------------------------------------------------------------------
 
-ROLES = {"loan_officer", "credit_staff", "branch_manager", "admin"}
+ROLES = {"loan_officer", "credit_manager", "admin"}
 
 
 def _normalize_email(value: str) -> str:

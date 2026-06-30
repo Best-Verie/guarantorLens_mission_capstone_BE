@@ -20,7 +20,7 @@ from .schema import (
 
 router = APIRouter(tags=["applications"])
 
-MANAGER_ROLES = {"credit_staff", "branch_manager", "admin"}
+MANAGER_ROLES = {"credit_manager", "admin"}
 
 
 def _is_manager(user: User) -> bool:
