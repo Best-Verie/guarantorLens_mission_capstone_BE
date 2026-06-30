@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 # --- auth -------------------------------------------------------------------
 
-ROLES = {"loan_officer", "credit_staff", "branch_manager"}
+ROLES = {"loan_officer", "credit_staff", "branch_manager", "admin"}
 
 
 def _normalize_email(value: str) -> str:
@@ -232,3 +232,73 @@ class MemberOut(BaseModel):
     backed_by: int           # in-degree (members who guarantee this one)
     guarantees_given: int    # out-degree
     neighbour_default_rate: float
+
+
+# --- applications workflow ---------------------------------------------------
+
+class ApplicationCreate(BaseModel):
+    amount: float
+    savings: float = 0.0
+    salary: Optional[float] = None
+    guarantor_ids: List[str] = []
+    borrower_id: Optional[str] = None
+    borrower_name: Optional[str] = None
+    branch: Optional[str] = None
+
+
+class RecommendationCreate(BaseModel):
+    decision: str            # approve / request_changes / decline
+    note: Optional[str] = None
+
+
+class RecommendationOut(BaseModel):
+    id: int
+    author_name: Optional[str] = None
+    author_role: Optional[str] = None
+    decision: str
+    note: Optional[str] = None
+    created_at: str
+
+
+class EscalateRequest(BaseModel):
+    note: Optional[str] = None
+
+
+class ApplicationListItem(BaseModel):
+    id: int
+    borrower: Optional[str] = None
+    branch: Optional[str] = None
+    amount: float
+    risk_score: Optional[int] = None
+    band: Optional[str] = None
+    status: str
+    created_by_name: Optional[str] = None
+    created_at: str
+
+
+class ApplicationOut(BaseModel):
+    id: int
+    created_by_name: Optional[str] = None
+    branch: Optional[str] = None
+    borrower_id: Optional[str] = None
+    borrower_name: Optional[str] = None
+    amount: float
+    savings: Optional[float] = None
+    salary: Optional[float] = None
+    guarantor_ids: List[str] = []
+    risk_score: Optional[int] = None
+    band: Optional[str] = None
+    probability: Optional[float] = None
+    reasons: list = []
+    flags: List[str] = []
+    source: Optional[str] = None
+    status: str
+    escalation_note: Optional[str] = None
+    created_at: str
+    recommendations: List[RecommendationOut] = []
+
+
+class ApplicationStats(BaseModel):
+    my_open: int
+    escalated: int
+    total: int

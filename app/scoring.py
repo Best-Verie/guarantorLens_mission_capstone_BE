@@ -153,6 +153,9 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id)
         return float(np.mean(sav)) if sav else None
     if name == "g_mean_salary":
         return float(np.mean(sal)) if sal else None
+    if name == "g_sav_ratio":
+        gms = float(np.mean(sav)) if sav else None
+        return None if gms is None else gms / ((savings or 0.0) + 1)
     if name == "g_prior_default_rate":
         return float(np.mean([_prior_default(x, disb) for x in g])) if g else 0.0
     if name in ("g_load_asof_mean", "g_load_asof_max"):
