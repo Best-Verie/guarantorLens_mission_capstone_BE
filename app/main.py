@@ -11,6 +11,7 @@ from .risk import router as risk_router
 from .members import router as members_router
 from .insights import router as insights_router
 from .applications import router as applications_router
+from .admin import router as admin_router
 
 
 @asynccontextmanager
@@ -41,6 +42,7 @@ app.include_router(risk_router)
 app.include_router(members_router)
 app.include_router(insights_router)
 app.include_router(applications_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")

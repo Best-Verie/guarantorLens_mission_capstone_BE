@@ -57,16 +57,55 @@ def _load():
     try:
         import joblib
         bundle = joblib.load(MODEL_PATH)
+        # keep the small bundle metadata (name, metrics, trained_at, ...) for the model card
+        meta = {k: v for k, v in bundle.items() if k not in ("model", "medians")}
         return (bundle["model"], bundle["features"], members, loans_by_borrower,
                 bundle.get("bands") or _DEFAULT_BANDS,
                 bundle.get("medians", {}),
-                bundle.get("flag_thresholds", _DEFAULT_FLAGS), "model")
+                bundle.get("flag_thresholds", _DEFAULT_FLAGS), "model", meta)
     except Exception:
         return (None, None, members, loans_by_borrower,
-                _DEFAULT_BANDS, {}, _DEFAULT_FLAGS, "heuristic")
+                _DEFAULT_BANDS, {}, _DEFAULT_FLAGS, "heuristic", {})
 
 
-MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE = _load()
+MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META = _load()
+
+
+def reload():
+    """Re-read the artifacts from disk and swap the in-memory model/tables. Used by the
+    admin model-update endpoint after new artifacts are written."""
+    global MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META
+    (MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS,
+     FLAG_TH, _LOAD_SOURCE, MODEL_META) = _load()
+    return _LOAD_SOURCE
+
+
+def model_info():
+    """Model-card data for the admin page: what is deployed right now."""
+    meta = MODEL_META or {}
+    raw = meta.get("metrics") or {k: v for k, v in meta.items()
+                                  if k in ("roc_auc", "pr_auc", "pr_baseline")}
+    metrics = {}
+    for k, v in (raw or {}).items():
+        try:
+            metrics[k] = round(float(v), 4)
+        except (TypeError, ValueError):
+            metrics[k] = str(v)
+    trained = meta.get("trained_at") or meta.get("created_at")
+    return {
+        "source": _LOAD_SOURCE,                       # "model" or "heuristic" fallback
+        "loaded": MODEL is not None,
+        "model_name": meta.get("model_name") or meta.get("name"),
+        "trained_at": str(trained) if trained is not None else None,
+        "n_features": len(FEATURES) if FEATURES else 0,
+        "features": list(FEATURES) if FEATURES else [],
+        "network_features": list(meta.get("network_features") or []),
+        "bands": {k: float(v) for k, v in (BANDS or {}).items()},
+        "flag_thresholds": {k: float(v) for k, v in (FLAG_TH or {}).items()},
+        "metrics": metrics,
+        "n_members": len(MEMBERS),
+        "n_borrowers_with_loans": len(LOANS_BY_BORROWER),
+    }
 
 
 def _member(mid):
@@ -83,6 +122,36 @@ def _band(p: float) -> str:
     if p >= BANDS["medium"]:
         return "Medium"
     return "Low"
+
+
+_BAND_ORDER = ["Low", "Medium", "High"]
+
+
+def _bump(band: str, steps: int = 1) -> str:
+    i = _BAND_ORDER.index(band) if band in _BAND_ORDER else 0
+    return _BAND_ORDER[min(len(_BAND_ORDER) - 1, i + steps)]
+
+
+def adjust_band(base_band, guarantor_ids, borrower_id=None):
+    """Leak-free rule overlay: escalate the risk band on *concentrated* guarantor-network
+    red flags. The model score is unchanged; this only raises the displayed band, because
+    the model cannot reliably price guarantor commitment / defaults on this data.
+
+    We escalate on concentrated signals, not any single link, because in a dense guarantor
+    network almost every loan touches some over-committed or once-defaulted guarantor, so a
+    single-link rule would flag nearly everything and tell the officer nothing.
+      - whole backing group over-committed   -> +1 band (the guarantee itself is weak)
+      - two or more backers defaulted before -> High (a serious cluster of bad backers)
+    """
+    band = base_band
+    gs = guarantor_ids or []
+    over = [g for g in gs if (_member(g).get("loans_backed") or 0) >= FLAG_TH["over_committed_loads"]]
+    defaulters = [g for g in gs if _member(g).get("ever_defaulted") == 1]
+    if gs and len(over) == len(gs):
+        band = _bump(band, 1)
+    if len(defaulters) >= 2:
+        band = "High"
+    return band
 
 
 def score_loan(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
@@ -105,6 +174,34 @@ def score_loan(amount, savings, salary, disb_date, guarantor_ids, borrower_id=No
     if p is None:
         p = _heuristic(amount, savings or 0.0, salary, guarantor_ids, borrower_id)
     return p, _band(p)
+
+
+def score_many(items):
+    """Batch scorer for lists (early-warning). One predict_proba call over all loans,
+    so scoring hundreds of loans stays fast. items: list of dicts with amount, savings,
+    salary, disb_date, guarantor_ids, borrower_id. Returns list of (probability, band)."""
+    if not items:
+        return []
+    rows = []
+    for it in items:
+        try:
+            disb = date.fromisoformat(str(it.get("disb_date"))[:10]) if it.get("disb_date") else date.today()
+        except Exception:
+            disb = date.today()
+        feats = _build_features(it.get("amount", 0), it.get("savings") or 0.0, it.get("salary"),
+                                disb, it.get("guarantor_ids") or [], it.get("borrower_id"))
+        rows.append([feats[c] for c in FEATURES])
+    probs = None
+    if MODEL is not None:
+        try:
+            import pandas as pd
+            probs = MODEL.predict_proba(pd.DataFrame(rows, columns=FEATURES))[:, 1]
+        except Exception:
+            probs = None
+    if probs is None:
+        probs = [_heuristic(it.get("amount", 0), it.get("savings") or 0.0, it.get("salary"),
+                            it.get("guarantor_ids") or [], it.get("borrower_id")) for it in items]
+    return [(float(p), _band(float(p))) for p in probs]
 
 
 def _prior_default(mid, disb) -> float:
@@ -319,20 +416,36 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
                         "so treat it as a first estimate and confirm those details.")
 
     shap = []
+    proba = None
+    source = "heuristic"
     if MODEL is not None:
-        import pandas as pd
-        feats = _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id)
-        X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
-        proba = float(MODEL.predict_proba(X)[0][1])
-        shap = _shap(feats)
-        source = "model"
-    else:
+        try:
+            import pandas as pd
+            feats = _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id)
+            X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
+            proba = float(MODEL.predict_proba(X)[0][1])
+            shap = _shap(feats)
+            source = "model"
+        except Exception:
+            proba = None  # model could not score (e.g. version mismatch) -> fall back
+    if proba is None:
         proba = _heuristic(amount, savings, salary, guarantor_ids, borrower_id)
         source = "heuristic"
 
+    # Flag-adjusted band (leak-free rule overlay) - see adjust_band().
+    model_band = _band(proba)
+    band = adjust_band(model_band, guarantor_ids, borrower_id)
+    if band != model_band:
+        reasons.insert(0, {
+            "label": f"Risk level raised to {band}", "direction": "up", "kind": "network",
+            "detail": f"The model scored {round(proba * 100)}/100, but guarantor-network flags raise the "
+                      "overall risk level. The model cannot price these reliably on this data, so they "
+                      "escalate the band by rule.",
+        })
+
     return {
         "risk_score": round(proba * 100),
-        "band": _band(proba),
+        "band": band,
         "probability": round(proba, 4),
         "source": source,
         "reasons": reasons,

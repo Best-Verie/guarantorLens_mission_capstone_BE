@@ -5,6 +5,7 @@ psycopg2-binary
 python-dotenv
 gunicorn
 PyJWT
+python-multipart
 
 # Model serving (assess-risk). scikit-learn is pinned to the training version so
 # the saved model unpickles correctly.

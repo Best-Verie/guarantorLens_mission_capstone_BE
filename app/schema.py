@@ -302,3 +302,48 @@ class ApplicationStats(BaseModel):
     my_open: int
     escalated: int
     total: int
+
+
+# --- admin ------------------------------------------------------------------
+
+class AdminUserOut(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    role: str
+    created_at: Optional[str] = None
+    applications: int = 0
+
+
+class RoleUpdate(BaseModel):
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, v: str) -> str:
+        if v not in ROLES:
+            raise ValueError(f"role must be one of {sorted(ROLES)}")
+        return v
+
+
+class ModelCard(BaseModel):
+    source: str
+    loaded: bool
+    model_name: Optional[str] = None
+    trained_at: Optional[str] = None
+    n_features: int = 0
+    features: List[str] = []
+    network_features: List[str] = []
+    bands: dict = {}
+    flag_thresholds: dict = {}
+    metrics: dict = {}
+    n_members: int = 0
+    n_borrowers_with_loans: int = 0
+
+
+class ActivityStats(BaseModel):
+    users_total: int
+    users_by_role: dict = {}
+    applications_total: int
+    applications_by_status: dict = {}
+    applications_by_band: dict = {}

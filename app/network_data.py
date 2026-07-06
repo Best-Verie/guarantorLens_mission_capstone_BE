@@ -31,6 +31,14 @@ LOANS, BY_BORROWER, BY_GUARANTOR = _load()
 HAS_LOANS = bool(LOANS)
 
 
+def reload():
+    """Re-read the loans table after the admin uploads new artifacts."""
+    global LOANS, BY_BORROWER, BY_GUARANTOR, HAS_LOANS
+    LOANS, BY_BORROWER, BY_GUARANTOR = _load()
+    HAS_LOANS = bool(LOANS)
+    return len(LOANS)
+
+
 def member_detail(member_id: str, members: dict) -> dict:
     """Return loans, backers, guarantees-given, and an ego network for a member."""
     own_loans = BY_BORROWER.get(member_id, [])
