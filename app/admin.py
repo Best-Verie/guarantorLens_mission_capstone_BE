@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from . import network_data, scoring
+from . import insights, network_data, scoring
 from .auth import get_current_user
 from .db import get_db
 from .models import Application, Recommendation, User
@@ -136,6 +136,8 @@ async def update_model(
         scoring.reload()
         if loans_path:
             network_data.reload()
+        insights._EW_CACHE["data"] = None   # new model -> recompute early warning
+        insights._OV_CACHE["data"] = None    # and the portfolio overview
         info = scoring.model_info()
         if not info["loaded"]:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,

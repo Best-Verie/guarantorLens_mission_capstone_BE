@@ -300,19 +300,37 @@ FRIENDLY = {
 
 
 def _shap(feats: dict, top: int = 6):
-    """Per-feature contributions from a tree model (native tree SHAP).
-    Returns [] for non-tree models (e.g. calibrated logistic regression)."""
+    """Per-feature contributions from the XGBoost model (native tree SHAP).
+
+    Handles the deployed shape (a CalibratedClassifierCV wrapping one imputer+XGB
+    pipeline per CV fold): we average the tree contributions across folds. Also
+    handles a bare pipeline or a bare classifier. Returns [] if none apply."""
     try:
+        import numpy as np
         import pandas as pd
         import xgboost
 
         X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
-        imp = MODEL.named_steps["imp"]
-        clf = MODEL.named_steps["clf"]
-        Xi = imp.transform(X)
-        contribs = clf.get_booster().predict(
-            xgboost.DMatrix(Xi, feature_names=FEATURES), pred_contribs=True
-        )[0]
+
+        def booster_contribs(estimator):
+            # estimator may be a Pipeline (imputer + xgb) or a bare xgb classifier
+            if hasattr(estimator, "steps"):
+                clf = estimator[-1]
+                Xi = estimator[:-1].transform(X)
+            else:
+                clf, Xi = estimator, X
+            dm = xgboost.DMatrix(Xi, feature_names=list(FEATURES))
+            return clf.get_booster().predict(dm, pred_contribs=True)[0]
+
+        if hasattr(MODEL, "calibrated_classifiers_"):
+            per_fold = []
+            for cc in MODEL.calibrated_classifiers_:
+                est = getattr(cc, "estimator", getattr(cc, "base_estimator", None))
+                per_fold.append(booster_contribs(est))
+            contribs = np.mean(per_fold, axis=0)
+        else:
+            contribs = booster_contribs(MODEL)
+
         out = []
         for i, f in enumerate(FEATURES):  # last entry is the bias term, skipped
             v = float(contribs[i])
@@ -354,21 +372,34 @@ def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id
             "detail": "The borrower sits in a guarantee group where many loans have gone bad.",
         })
 
-    loan_to_savings = amount / ((savings or 0) + 1)
-    if loan_to_savings >= 5:
+    # Always explain the biggest individual drivers with the actual numbers, so the
+    # score is never left unexplained (native SHAP is unavailable for this model).
+    ratio = amount / ((savings or 0) + 1)
+    if ratio >= 3:
         reasons.append({
-            "label": "Loan large vs savings", "direction": "up", "kind": "individual",
-            "detail": "The loan is large compared with the borrower's savings.",
+            "label": f"Loan is {ratio:.0f}x the borrower's savings", "direction": "up", "kind": "individual",
+            "detail": "A large loan relative to savings is the main thing pushing this score up.",
         })
-    elif loan_to_savings <= 1:
+    elif ratio >= 1.2:
         reasons.append({
-            "label": "Strong savings", "direction": "down", "kind": "individual",
-            "detail": "The borrower's savings are healthy compared with the loan size.",
+            "label": f"Loan is {ratio:.1f}x the borrower's savings", "direction": "up", "kind": "individual",
+            "detail": "The loan is somewhat larger than what the borrower has saved.",
         })
+    else:
+        reasons.append({
+            "label": f"Savings cover the loan ({ratio:.1f}x)", "direction": "down", "kind": "individual",
+            "detail": "Savings are healthy compared with the loan size, which lowers the score.",
+        })
+
     if not salary:
         reasons.append({
             "label": "No salary on file", "direction": "up", "kind": "individual",
             "detail": "No salary is recorded, so income is harder to confirm.",
+        })
+    else:
+        reasons.append({
+            "label": "Salary on file", "direction": "down", "kind": "individual",
+            "detail": "A recorded salary is evidence of income to repay.",
         })
 
     if not flags:

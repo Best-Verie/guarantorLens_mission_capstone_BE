@@ -347,3 +347,25 @@ class ActivityStats(BaseModel):
     applications_total: int
     applications_by_status: dict = {}
     applications_by_band: dict = {}
+
+
+class InsightsOverview(BaseModel):
+    # portfolio
+    n_loans: int
+    n_members: int
+    total_disbursed: float
+    outcomes: dict = {}          # {"Repaid": n, "Written off": n, ...}
+    branches: dict = {}          # {"Gasabo": n, ...}
+    bad_rate: float              # share of matured loans that went bad (0-1)
+    written_off_value: float
+    n_arrears: int
+    arrears_value: float
+    # guarantor network
+    unique_guarantors: int
+    avg_guarantors: float
+    over_committed: int
+    ever_defaulted: int
+    loans_backed_by_defaulter: int
+    pct_backed_by_defaulter: float
+    n_communities: int
+    worst_community_rate: float
