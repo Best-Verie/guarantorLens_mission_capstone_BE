@@ -128,6 +128,7 @@ class AssessResponse(BaseModel):
     shap: List[ShapContribution] = []   # model-faithful per-feature contributions
     flags: List[str]         # plain-language guarantor-network flags
     network: NetworkInfo
+    uids: dict = {}          # account number -> opaque url id (borrower + guarantors)
 
 
 # --- insights --------------------------------------------------------------
@@ -135,6 +136,7 @@ class AssessResponse(BaseModel):
 class WatchlistItem(BaseModel):
     loan_key: str
     borrower: str
+    borrower_uid: Optional[str] = None
     branch: Optional[str] = None
     amount: float
     days_in_arrears: int
@@ -143,6 +145,7 @@ class WatchlistItem(BaseModel):
 
 class SuperGuarantor(BaseModel):
     member_id: str
+    uid: Optional[str] = None
     branch: Optional[str] = None
     loans_backed: int
     ever_defaulted: bool
@@ -159,6 +162,7 @@ class CommunityStat(BaseModel):
 class EarlyWarningItem(BaseModel):
     loan_key: str
     borrower: str
+    borrower_uid: Optional[str] = None
     branch: Optional[str] = None
     amount: float
     days_in_arrears: int
@@ -216,6 +220,8 @@ class NetworkView(BaseModel):
 
 
 class MemberDetail(MemberProfile):
+    uid: Optional[str] = None                 # opaque url id for this member
+    uids: dict = {}                           # account number -> uid for every member linked on the page
     loans: List[LoanRef] = []                 # loans where this member is the borrower
     backers: List[str] = []                   # members who guarantee this member's loans
     guarantees_given: List[BackedLoan] = []   # loans this member guarantees

@@ -11,6 +11,7 @@ to a transparent heuristic so the API still responds.
 """
 import json
 import os
+import uuid
 from bisect import bisect_left
 from datetime import date
 
@@ -71,12 +72,37 @@ def _load():
 MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META = _load()
 
 
+# --- opaque member ids for URLs ---------------------------------------------
+# A member id like "Gasabo-001" is an (anonymised) account number: meaningful and
+# enumerable. We never put it in a URL. Instead URLs carry a stable, opaque uid
+# derived from the account number with a secret salt; the account number is still
+# shown as text in the UI. Set MEMBER_UID_SALT in production so uids are not guessable.
+_UID_NS = uuid.uuid5(uuid.NAMESPACE_URL,
+                     "guarantorlens:" + os.getenv("MEMBER_UID_SALT", "gl-default-change-me"))
+_UID_TO_MID: dict = {}
+
+
+def member_uid(member_id):
+    """Stable opaque URL id for a member (returns None for a missing id)."""
+    return str(uuid.uuid5(_UID_NS, str(member_id))) if member_id is not None else None
+
+
+def resolve_member_ref(ref):
+    """Accept an opaque uid OR a raw account number; return the account number, or None."""
+    if ref in MEMBERS:
+        return ref
+    if not _UID_TO_MID:
+        _UID_TO_MID.update({member_uid(mid): mid for mid in MEMBERS})
+    return _UID_TO_MID.get(ref)
+
+
 def reload():
     """Re-read the artifacts from disk and swap the in-memory model/tables. Used by the
     admin model-update endpoint after new artifacts are written."""
     global MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META
     (MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS,
      FLAG_TH, _LOAD_SOURCE, MODEL_META) = _load()
+    _UID_TO_MID.clear()   # member table changed -> rebuild uid map lazily
     return _LOAD_SOURCE
 
 
@@ -488,4 +514,6 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
             "guarantor_ids": guarantor_ids,
             "new_members": new_members,
         },
+        # opaque url ids for the borrower + guarantors, so links never expose account numbers
+        "uids": {r: member_uid(r) for r in ([borrower_id] + list(guarantor_ids)) if r},
     }

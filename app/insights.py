@@ -25,7 +25,10 @@ _EW_TTL = 600  # seconds
 
 @router.get("/watchlist", response_model=List[WatchlistItem])
 def watchlist(user: User = Depends(get_current_user)):
-    return network_data.watchlist(scoring.MEMBERS)
+    items = network_data.watchlist(scoring.MEMBERS)
+    for it in items:
+        it["borrower_uid"] = scoring.member_uid(it.get("borrower"))
+    return items
 
 
 @router.get("/insights/overview", response_model=InsightsOverview)
@@ -92,7 +95,10 @@ def overview(user: User = Depends(get_current_user)):
 
 @router.get("/insights/super-guarantors", response_model=List[SuperGuarantor])
 def super_guarantors(user: User = Depends(get_current_user)):
-    return network_data.super_guarantors(scoring.MEMBERS)
+    rows = network_data.super_guarantors(scoring.MEMBERS)
+    for r in rows:
+        r["uid"] = scoring.member_uid(r.get("member_id"))
+    return rows
 
 
 @router.get("/insights/communities", response_model=List[CommunityStat])
@@ -120,7 +126,8 @@ def early_warning(user: User = Depends(get_current_user)):
     } for ln in active]
     scores = scoring.score_many(inputs)   # one predict over all active loans
     items = [{
-        "loan_key": ln["loan_key"], "borrower": ln.get("borrower"), "branch": ln.get("branch"),
+        "loan_key": ln["loan_key"], "borrower": ln.get("borrower"),
+        "borrower_uid": scoring.member_uid(ln.get("borrower")), "branch": ln.get("branch"),
         "amount": ln.get("amount", 0), "days_in_arrears": int(ln.get("days_in_arrears", 0) or 0),
         "risk_score": round(prob * 100),
         # same leak-free flag overlay as the assessment card
