@@ -281,9 +281,32 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id)
         return None if gms is None else gms / ((savings or 0.0) + 1)
     if name == "g_prior_default_rate":
         return float(np.mean([_prior_default(x, disb) for x in g])) if g else 0.0
+    if name == "g_prior_default_count":
+        return float(sum(_prior_default(x, disb) for x in g)) if g else 0.0
     if name in ("g_load_asof_mean", "g_load_asof_max"):
         loads = [bisect_left(_guarantee_dates(x), disb) for x in g] or [0]
         return float(np.mean(loads)) if name.endswith("mean") else float(np.max(loads))
+    if name in ("g_load_asof_sum", "g_loaded_count", "g_repeat_guarantor_rate"):
+        loads = [bisect_left(_guarantee_dates(x), disb) for x in g] or [0]
+        if name == "g_load_asof_sum":
+            return float(np.sum(loads))
+        loaded = sum(1 for x in loads if x > 0)
+        if name == "g_loaded_count":
+            return float(loaded)
+        return float(loaded / len(loads)) if loads else 0.0
+    if name in ("g_load_pressure", "g_default_pressure", "g_repeat_pressure"):
+        log_amount = float(np.log1p(amount))
+        loads = [bisect_left(_guarantee_dates(x), disb) for x in g] or [0]
+        if name == "g_load_pressure":
+            return log_amount * float(np.log1p(np.sum(loads)))
+        if name == "g_default_pressure":
+            prior_rate = float(np.mean([_prior_default(x, disb) for x in g])) if g else 0.0
+            return log_amount * prior_rate
+        loaded = sum(1 for x in loads if x > 0)
+        repeat_rate = float(loaded / len(loads)) if loads else 0.0
+        return log_amount * repeat_rate
+    if name == "borrower_is_guarantor":
+        return 1.0 if borrower_id and borrower_id in set(g) else 0.0
     if name == "b_prior_loans":
         return float(_prior_loans(borrower_id, disb))
     if name == "b_prior_writeoff":
@@ -315,8 +338,16 @@ FRIENDLY = {
     "loan_to_salary": "Loan size vs salary",
     "n_guarantors": "Number of guarantors",
     "g_prior_default_rate": "Guarantors who defaulted before",
+    "g_prior_default_count": "Prior-default guarantors",
     "g_load_asof_mean": "Guarantors' average load",
     "g_load_asof_max": "Most loaded guarantor",
+    "g_load_asof_sum": "Total guarantor load",
+    "g_loaded_count": "Previously active guarantors",
+    "g_repeat_guarantor_rate": "Repeat-guarantor share",
+    "g_load_pressure": "Network load pressure",
+    "g_default_pressure": "Default-history pressure",
+    "g_repeat_pressure": "Repeat-guarantor pressure",
+    "borrower_is_guarantor": "Borrower also guarantees",
     "g_mean_savings": "Guarantors' savings",
     "g_mean_salary": "Guarantors' salary",
     "b_prior_loans": "Borrower's past loans",
@@ -342,7 +373,10 @@ def _shap(feats: dict, top: int = 6):
             # estimator may be a Pipeline (imputer + xgb) or a bare xgb classifier
             if hasattr(estimator, "steps"):
                 clf = estimator[-1]
-                Xi = estimator[:-1].transform(X)
+                Xi = X
+                for _, step in estimator.steps[:-1]:
+                    if hasattr(step, "transform"):
+                        Xi = step.transform(Xi)
             else:
                 clf, Xi = estimator, X
             dm = xgboost.DMatrix(Xi, feature_names=list(FEATURES))
@@ -364,8 +398,16 @@ def _shap(feats: dict, top: int = 6):
                 {"feature": f, "label": FRIENDLY.get(f, f), "value": round(v, 4),
                  "direction": "up" if v > 0 else "down"}
             )
+        network_features = set((MODEL_META or {}).get("network_features") or [])
+        for item in out:
+            item["kind"] = "network" if item["feature"] in network_features else "individual"
         out.sort(key=lambda d: abs(d["value"]), reverse=True)
-        return out[:top]
+        top_items = out[:top]
+        if network_features and not any(d["feature"] in network_features for d in top_items):
+            network_ranked = [d for d in out if d["feature"] in network_features]
+            if network_ranked:
+                top_items = top_items[: max(0, top - 1)] + [network_ranked[0]]
+        return top_items
     except Exception:
         return []
 
