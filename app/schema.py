@@ -117,6 +117,7 @@ class ShapContribution(BaseModel):
     label: str               # friendly name
     value: float             # signed SHAP value (log-odds); >0 raises risk
     direction: str           # "up" | "down"
+    kind: Optional[str] = None  # "individual" | "network"
 
 
 class AssessResponse(BaseModel):
@@ -125,6 +126,7 @@ class AssessResponse(BaseModel):
     probability: float
     source: str              # "model" | "heuristic"
     reasons: List[Reason]
+    recommendations: List[str] = []     # plain, actionable suggestions for the officer
     shap: List[ShapContribution] = []   # model-faithful per-feature contributions
     flags: List[str]         # plain-language guarantor-network flags
     network: NetworkInfo

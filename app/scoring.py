@@ -72,6 +72,44 @@ def _load():
 MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META = _load()
 
 
+# --- loan histories for the as-of behavioural features ----------------------
+# BORROWER_HISTORY: member -> sorted [(date, troubled)] for loans they took (as borrower)
+# GUAR_BACKED:      member -> sorted [(date, troubled)] for loans they backed (as guarantor)
+# "troubled" is written-off or 30+ days in arrears; falls back to the label if not present.
+BORROWER_HISTORY: dict = {}
+GUAR_BACKED: dict = {}
+
+
+def _load_histories():
+    bh, gb = {}, {}
+    try:
+        with open(LOANS_PATH) as fh:
+            for ln in json.load(fh):
+                d = ln.get("disb_date") or ln.get("disb")
+                if not d:
+                    continue
+                try:
+                    dt = date.fromisoformat(str(d)[:10])
+                except Exception:
+                    continue
+                troubled = int(ln.get("troubled", ln.get("label", 0)) or 0)
+                bid = ln.get("borrower") if ln.get("borrower") is not None else ln.get("member")
+                if bid is not None:
+                    bh.setdefault(bid, []).append((dt, troubled))
+                for guar in (ln.get("guarantors") or []):
+                    gb.setdefault(guar, []).append((dt, troubled))
+        for v in bh.values():
+            v.sort()
+        for v in gb.values():
+            v.sort()
+    except Exception:
+        pass
+    return bh, gb
+
+
+BORROWER_HISTORY, GUAR_BACKED = _load_histories()
+
+
 # --- opaque member ids for URLs ---------------------------------------------
 # A member id like "Gasabo-001" is an (anonymised) account number: meaningful and
 # enumerable. We never put it in a URL. Instead URLs carry a stable, opaque uid
@@ -100,8 +138,10 @@ def reload():
     """Re-read the artifacts from disk and swap the in-memory model/tables. Used by the
     admin model-update endpoint after new artifacts are written."""
     global MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META
+    global BORROWER_HISTORY, GUAR_BACKED
     (MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS,
      FLAG_TH, _LOAD_SOURCE, MODEL_META) = _load()
+    BORROWER_HISTORY, GUAR_BACKED = _load_histories()
     _UID_TO_MID.clear()   # member table changed -> rebuild uid map lazily
     return _LOAD_SOURCE
 
@@ -316,6 +356,30 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id)
         if m.get("account_age_days") is not None:
             return float(m["account_age_days"])
         return None  # no opening date stored -> impute from medians
+
+    # --- as-of behavioural features (need the loan-history indexes) ---
+    if name in ("b_prior_arrears_rate", "b_recent_loans", "time_since_last_loan"):
+        prior = [(dt, tr) for dt, tr in BORROWER_HISTORY.get(borrower_id, []) if dt < disb] if borrower_id else []
+        if name == "b_prior_arrears_rate":
+            return float(np.mean([tr for _, tr in prior])) if prior else 0.0
+        if name == "b_recent_loans":
+            return float(sum(1 for dt, _ in prior if (disb - dt).days <= 730))
+        return ((disb - max(dt for dt, _ in prior)).days / 365.25) if prior else None
+    if name == "g_prior_arrears_rate":
+        rates = []
+        for x in g:
+            backed = [tr for dt, tr in GUAR_BACKED.get(x, []) if dt < disb]
+            rates.append(float(np.mean(backed)) if backed else 0.0)
+        return float(np.mean(rates)) if g else 0.0
+    if name == "account_age":
+        m = _member(borrower_id)
+        if m.get("account_age") is not None:
+            return float(m["account_age"])
+        if m.get("account_age_days") is not None:
+            return float(m["account_age_days"]) / 365.25
+        return None  # no opening date -> impute from medians
+    if name == "interest_rate":
+        return None  # not collected at assessment time -> impute from medians (the standard rate)
     return None
 
 
@@ -353,6 +417,12 @@ FRIENDLY = {
     "b_prior_loans": "Borrower's past loans",
     "b_prior_writeoff": "Borrower defaulted before",
     "b_account_age": "Borrower account age",
+    "b_prior_arrears_rate": "Borrower's past arrears",
+    "b_recent_loans": "Borrower's recent loans",
+    "time_since_last_loan": "Time since last loan",
+    "g_prior_arrears_rate": "Guarantors' backing record",
+    "interest_rate": "Interest rate",
+    "account_age": "Account age",
 }
 
 
@@ -440,6 +510,37 @@ def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id
             "detail": "The borrower sits in a guarantee group where many loans have gone bad.",
         })
 
+    # Plain guarantor-finance reasons: how strong are the guarantors themselves?
+    gsav = [_member(g).get("savings") for g in guarantor_ids if _member(g).get("savings") is not None]
+    gsal = [_member(g).get("salary") for g in guarantor_ids if _member(g).get("salary") is not None]
+    if gsav and amount:
+        coverage = (sum(gsav) / len(gsav)) * len(guarantor_ids) / max(amount, 1.0)
+        if coverage >= 0.5:
+            reasons.append({
+                "label": "Guarantors have strong savings", "direction": "down", "kind": "network",
+                "detail": f"Together the guarantors' savings cover about {coverage:.0%} of the loan, "
+                          "which strengthens the guarantee.",
+            })
+        elif coverage < 0.15:
+            reasons.append({
+                "label": "Guarantors have little savings", "direction": "up", "kind": "network",
+                "detail": "The guarantors hold little savings themselves, so their guarantee is weaker.",
+            })
+    if gsal and salary:
+        g_salary = sum(gsal) / len(gsal)
+        if g_salary >= salary:
+            reasons.append({
+                "label": "Guarantors earn well", "direction": "down", "kind": "network",
+                "detail": "On average the guarantors earn as much as or more than the borrower, "
+                          "which strengthens the guarantee.",
+            })
+        elif g_salary < 0.6 * salary:
+            reasons.append({
+                "label": "Guarantors earn less than the borrower", "direction": "up", "kind": "network",
+                "detail": "The guarantors earn noticeably less than the borrower, so they may struggle "
+                          "to step in if the loan goes bad.",
+            })
+
     # Always explain the biggest individual drivers with the actual numbers, so the
     # score is never left unexplained (native SHAP is unavailable for this model).
     ratio = amount / ((savings or 0) + 1)
@@ -473,6 +574,31 @@ def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id
     if not flags:
         flags.append("No notable guarantor-network flags")
     return flags, reasons
+
+
+def _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band):
+    """Plain, actionable suggestions an officer could act on. Advice, not a decision."""
+    recs = []
+    if any(_member(g).get("ever_defaulted") == 1 for g in guarantor_ids):
+        recs.append("Replace or add a guarantor: one of the current backers has defaulted before.")
+    heavy = [g for g in guarantor_ids if (_member(g).get("loans_backed") or 0) >= FLAG_TH["over_committed_loads"]]
+    if heavy:
+        recs.append("Add a guarantor who is backing fewer loans, so the guarantee is not stretched thin.")
+    gsav = [_member(g).get("savings") for g in guarantor_ids if _member(g).get("savings") is not None]
+    if gsav and amount and (sum(gsav) / len(gsav)) * len(guarantor_ids) / max(amount, 1.0) < 0.15:
+        recs.append("Add a guarantor with stronger savings to back the loan.")
+    if amount / ((savings or 0) + 1) >= 3:
+        recs.append("Consider a smaller loan, or ask the borrower to build up more savings first.")
+    if not salary:
+        recs.append("Confirm the borrower's income before approving; no salary is on file.")
+    cdr = _member(borrower_id).get("community_default_rate", 0.0) if borrower_id else 0.0
+    if cdr >= FLAG_TH["high_default_community"]:
+        recs.append("Take a closer look at the borrower's guarantee group; it has a high default history.")
+    if band == "High":
+        recs.append("Escalate to a credit manager for a second review before deciding.")
+    if not recs:
+        recs.append("The profile looks sound. Proceed with the usual checks.")
+    return recs
 
 
 def _heuristic(amount, savings, salary, guarantor_ids, borrower_id):
@@ -542,12 +668,15 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
                       "escalate the band by rule.",
         })
 
+    recommendations = _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band)
+
     return {
         "risk_score": round(proba * 100),
         "band": band,
         "probability": round(proba, 4),
         "source": source,
         "reasons": reasons,
+        "recommendations": recommendations,
         "shap": shap,
         "flags": flags,
         "network": {
