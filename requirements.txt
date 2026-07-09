@@ -7,11 +7,13 @@ gunicorn
 PyJWT
 python-multipart
 
-# Model serving (assess-risk). These are pinned to the TRAINING versions so the saved
-# model unpickles correctly on the server. A version mismatch makes the model fail to
-# load and the API silently falls back to the heuristic. Keep in sync with the notebook.
+# Model serving (assess-risk). The saved model is a CalibratedClassifierCV over an
+# imbalanced-learn pipeline, so imbalanced-learn MUST be installed to unpickle it.
+# scikit-learn is pinned to the training version (its pickles are version-sensitive);
+# numpy 2 / newer xgboost load the bundle fine via backward compatibility (verified).
 scikit-learn==1.6.1
-xgboost==3.2.0
-numpy<2
+imbalanced-learn==0.14.2
+xgboost
+numpy
 joblib
 pandas
