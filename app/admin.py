@@ -151,6 +151,8 @@ async def update_model(
             network_data.reload()
         insights._EW_CACHE["data"] = None   # new model -> recompute early warning
         insights._OV_CACHE["data"] = None    # and the portfolio overview
+        from . import members
+        members._SAMPLE_CACHE["data"] = None  # and the demo example sample
         info = scoring.model_info()
         if not info["loaded"]:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,

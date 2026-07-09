@@ -9,21 +9,38 @@ from .schema import MemberDetail, NetworkView
 router = APIRouter(tags=["members"])
 
 
+_SAMPLE_CACHE = {"data": None}
+
+
 @router.get("/members/examples")
 def member_examples(user: User = Depends(get_current_user)):
-    """A few real member IDs and one ready-made assessment, pulled from whatever data is
-    loaded, so the UI's examples/placeholders always match the deployed dataset."""
+    """A few real member IDs and one ready-made, *presentable* assessment (a genuinely
+    high-risk real loan where the model score and the band agree), pulled from whatever
+    data is loaded so the UI examples always match the deployed dataset."""
     ids = list(scoring.MEMBERS.keys())[:6]
-    sample = None
-    for ln in network_data.LOANS:
-        gs = ln.get("guarantors") or []
-        if ln.get("borrower") in scoring.MEMBERS and len(gs) >= 2:
-            m = scoring.MEMBERS.get(ln["borrower"], {})
-            sample = {"borrower_id": ln["borrower"], "guarantor_ids": gs[:3],
-                      "amount": ln.get("amount") or 0,
-                      "savings": m.get("savings"), "salary": m.get("salary")}
-            break
-    return {"member_ids": ids, "sample": sample}
+    if _SAMPLE_CACHE["data"] is None:
+        best = None
+        checked = 0
+        for ln in network_data.LOANS:
+            gs = ln.get("guarantors") or []
+            b = ln.get("borrower")
+            if b not in scoring.MEMBERS or not (2 <= len(gs) <= 3):
+                continue
+            m = scoring.MEMBERS[b]
+            try:
+                r = scoring.assess(ln.get("amount") or 0, m.get("savings"), m.get("salary"),
+                                   ln.get("disb_date"), gs[:3], borrower_id=b, interest_rate=14)
+            except Exception:
+                continue
+            checked += 1
+            cand = {"borrower_id": b, "guarantor_ids": gs[:3], "amount": ln.get("amount") or 0,
+                    "savings": m.get("savings"), "salary": m.get("salary"), "interest_rate": 14}
+            if best is None or r["risk_score"] > best[0]:
+                best = (r["risk_score"], cand)
+            if r["risk_score"] >= 60 or checked >= 400:   # a clear High, model + band agree
+                break
+        _SAMPLE_CACHE["data"] = best[1] if best else None
+    return {"member_ids": ids, "sample": _SAMPLE_CACHE["data"]}
 
 
 @router.get("/network/{ref}", response_model=NetworkView)
