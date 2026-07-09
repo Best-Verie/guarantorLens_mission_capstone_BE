@@ -9,6 +9,7 @@ come from the bundle's "bands" (percentile-based) when present.
 If the model cannot be loaded (missing file or library), the endpoint falls back
 to a transparent heuristic so the API still responds.
 """
+import contextvars
 import json
 import os
 import uuid
@@ -147,6 +148,7 @@ def reload():
      FLAG_TH, _LOAD_SOURCE, MODEL_META) = _load()
     BORROWER_HISTORY, GUAR_BACKED = _load_histories()
     _UID_TO_MID.clear()   # member table changed -> rebuild uid map lazily
+    _CANDIDATE_CACHE["data"] = None   # rebuild the strong-guarantor pool from the new table
     return _LOAD_SOURCE
 
 
@@ -178,8 +180,44 @@ def model_info():
     }
 
 
+# What-if overrides: a per-call map {member_id: {savings, salary, loans_backed, ever_defaulted}}
+# that temporarily patches a member's attributes so an officer can simulate "what if this
+# guarantor had more savings / were not over-committed". Held in a context var so it is
+# per-request safe (FastAPI runs sync endpoints in a threadpool). Set only inside assess().
+_OVERRIDES: contextvars.ContextVar = contextvars.ContextVar("guarantor_overrides", default=None)
+
+# only these attributes may be overridden, and each is coerced to the right type
+_OVERRIDABLE = {
+    "savings": float, "salary": float,
+    "loans_backed": lambda v: int(float(v)), "ever_defaulted": lambda v: int(bool(v)),
+}
+
+
+def _clean_overrides(raw):
+    if not raw:
+        return None
+    out = {}
+    for mid, attrs in raw.items():
+        if not isinstance(attrs, dict):
+            continue
+        clean = {}
+        for k, coerce in _OVERRIDABLE.items():
+            if attrs.get(k) is not None:
+                try:
+                    clean[k] = coerce(attrs[k])
+                except (TypeError, ValueError):
+                    pass
+        if clean:
+            out[mid] = clean
+    return out or None
+
+
 def _member(mid):
-    return MEMBERS.get(mid, {})
+    m = MEMBERS.get(mid, {})
+    ov = _OVERRIDES.get()
+    if ov and mid in ov:
+        return {**m, **ov[mid]}
+    return m
 
 
 def _guarantee_dates(mid):
@@ -192,6 +230,20 @@ def _band(p: float) -> str:
     if p >= BANDS["medium"]:
         return "Medium"
     return "Low"
+
+
+def _display_score(p: float) -> int:
+    """Map the calibrated probability onto an intuitive 0-100 risk score whose ranges match
+    the bands: Low 0-39, Medium 40-69, High 70-100. This exists only for display, so an officer
+    never sees "21/100 = High"; the true probability is still returned separately as `probability`.
+    The map is monotonic in p, so a higher default probability always shows a higher score."""
+    m, h = BANDS["medium"], BANDS["high"]
+    if p < m:
+        return int(round(39 * p / m)) if m > 0 else 0
+    if p < h:
+        return int(round(40 + 29 * (p - m) / (h - m))) if h > m else 55
+    cap = max(h * 3.0, 0.60)     # probability at which the score saturates near 100
+    return int(round(70 + 30 * min(1.0, (p - h) / (cap - h)))) if cap > h else 100
 
 
 _BAND_ORDER = ["Low", "Medium", "High"]
@@ -238,7 +290,7 @@ def score_loan(amount, savings, salary, disb_date, guarantor_ids, borrower_id=No
             import pandas as pd
             feats = _build_features(amount, savings or 0.0, salary, disb, guarantor_ids, borrower_id)
             X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
-            p = float(MODEL.predict_proba(X)[0][1])
+            p = float(MODEL.predict_proba(X.values)[0][1])
         except Exception:
             p = None  # model could not score (e.g. version mismatch) -> fall back
     if p is None:
@@ -265,7 +317,7 @@ def score_many(items):
     if MODEL is not None:
         try:
             import pandas as pd
-            probs = MODEL.predict_proba(pd.DataFrame(rows, columns=FEATURES))[:, 1]
+            probs = MODEL.predict_proba(pd.DataFrame(rows, columns=FEATURES).values)[:, 1]
         except Exception:
             probs = None
     if probs is None:
@@ -424,6 +476,7 @@ FRIENDLY = {
     "borrower_is_guarantor": "Borrower also guarantees",
     "g_mean_savings": "Guarantors' savings",
     "g_mean_salary": "Guarantors' salary",
+    "g_sav_ratio": "Guarantors' savings vs the loan",
     "b_prior_loans": "Borrower's past loans",
     "b_prior_writeoff": "Borrower defaulted before",
     "b_account_age": "Borrower account age",
@@ -447,7 +500,7 @@ def _shap(feats: dict, top: int = 6):
         import pandas as pd
         import xgboost
 
-        X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
+        X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES).values  # plain array (no feature-name warning)
 
         def booster_contribs(estimator):
             # estimator may be a Pipeline (imputer + xgb) or a bare xgb classifier
@@ -611,6 +664,59 @@ def _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band):
     return recs
 
 
+def _decision_brief(amount, savings, salary, guarantor_ids, borrower_id, band):
+    """A short officer-style narrative that reads like a human wrote the memo. Template-based
+    (deterministic, offline, defensible) - it just narrates the same facts the flags/reasons use,
+    so the brief can never disagree with the score."""
+    opener = {
+        "High": "This loan looks high risk.",
+        "Medium": "This loan is moderate risk.",
+        "Low": "This loan looks low risk.",
+    }.get(band, "This loan was assessed.")
+
+    # borrower's own footing
+    cover = (savings or 0) / max(amount, 1.0)
+    if cover >= 2:
+        borrower = f"The borrower is well covered, with savings about {cover:.1f} times the loan"
+    elif cover >= 0.5:
+        borrower = f"The borrower's savings cover roughly {cover:.0%} of the loan"
+    else:
+        borrower = "The borrower has thin savings against the loan"
+    if borrower_id and _member(borrower_id).get("ever_defaulted") == 1:
+        borrower += ", and they have defaulted on a past loan"
+    elif not salary:
+        borrower += ", and no salary is on file"
+    borrower += "."
+
+    # the guarantee
+    gparts = []
+    defaulters = [g for g in guarantor_ids if _member(g).get("ever_defaulted") == 1]
+    heavy = [g for g in guarantor_ids if (_member(g).get("loans_backed") or 0) >= FLAG_TH["over_committed_loads"]]
+    gsav = [_member(g).get("savings") for g in guarantor_ids if _member(g).get("savings") is not None]
+    gcover = (sum(gsav) / len(gsav)) * len(guarantor_ids) / max(amount, 1.0) if gsav and amount else None
+    if not guarantor_ids:
+        guarantee = "No guarantors are attached to this loan."
+    else:
+        if defaulters:
+            gparts.append(f"{len(defaulters)} of {len(guarantor_ids)} guarantors have defaulted before")
+        if heavy:
+            gparts.append(f"{len(heavy)} guarantor(s) are over-committed, backing many loans at once")
+        if gcover is not None and gcover >= 0.5:
+            gparts.append(f"together the guarantors' savings cover about {gcover:.0%} of the loan")
+        elif gcover is not None and gcover < 0.15:
+            gparts.append("the guarantors themselves hold little savings")
+        if not gparts:
+            gparts.append(f"the {len(guarantor_ids)} guarantor(s) raise no particular red flags")
+        guarantee = "On the guarantee side, " + "; ".join(gparts) + "."
+
+    closer = {
+        "High": "Recommend a second review by a credit manager, and strengthening the guarantee before approval.",
+        "Medium": "Proceed with care; a stronger guarantor or a smaller amount would lower the risk.",
+        "Low": "Proceed with the usual checks.",
+    }.get(band, "")
+    return f"{opener} {borrower} {guarantee} {closer}".strip()
+
+
 def _heuristic(amount, savings, salary, guarantor_ids, borrower_id):
     """Transparent fallback used only if the model cannot be loaded."""
     p = 0.10
@@ -628,7 +734,99 @@ def _heuristic(amount, savings, salary, guarantor_ids, borrower_id):
     return max(0.01, min(0.97, p))
 
 
-def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None, interest_rate=None):
+_CANDIDATE_CACHE = {"data": None}
+
+
+def _strong_candidates(limit=40):
+    """A pool of strong, available guarantors: clean record, not over-committed, real savings.
+    Cached because it only depends on the static member table."""
+    if _CANDIDATE_CACHE["data"] is None:
+        pool = [
+            m for m in MEMBERS.values()
+            if not m.get("ever_defaulted")
+            and (m.get("loans_backed") or 0) < FLAG_TH["over_committed_loads"]
+            and (m.get("savings") or 0) > 0
+        ]
+        pool.sort(key=lambda m: (m.get("savings") or 0), reverse=True)
+        _CANDIDATE_CACHE["data"] = [m["member_id"] for m in pool[:limit]]
+    return _CANDIDATE_CACHE["data"]
+
+
+def _guarantor_weakness(g):
+    """Higher = weaker guarantor, so we know which one to try replacing first."""
+    m = _member(g)
+    score = 0.0
+    if m.get("ever_defaulted") == 1:
+        score += 1000
+    if (m.get("loans_backed") or 0) >= FLAG_TH["over_committed_loads"]:
+        score += 500 + (m.get("loans_backed") or 0)
+    score += 1.0 / ((m.get("savings") or 0) + 1)   # thinner savings -> weaker
+    return score
+
+
+def suggest_guarantors(amount, savings, salary, guarantor_ids, borrower_id=None, interest_rate=None, max_suggestions=3):
+    """For a loan that scores Medium/High, search for a single guarantor change (swap the weakest
+    current backer, or add one if there is room) that lowers the risk band, and return the best
+    few. Turns the tool from a judge into an advisor: 'do this and the loan becomes bankable.'"""
+    guarantor_ids = [g for g in (guarantor_ids or [])]
+    base = assess(amount, savings, salary, None, guarantor_ids, borrower_id, interest_rate)
+    current = {"score": base["risk_score"], "band": base["band"]}
+    if base["band"] == "Low":
+        return {"current": current, "suggestions": [], "message": "This loan is already low risk."}
+
+    candidates = [c for c in _strong_candidates() if c not in guarantor_ids and c != borrower_id]
+    weakest = max(guarantor_ids, key=_guarantor_weakness) if guarantor_ids else None
+    band_rank = {"Low": 0, "Medium": 1, "High": 2}
+    results = []
+    for cand in candidates:
+        trials = []
+        if weakest is not None:
+            swapped = [c for c in guarantor_ids if c != weakest] + [cand]
+            trials.append(("swap", weakest, swapped))
+        if len(guarantor_ids) < 3:
+            trials.append(("add", None, guarantor_ids + [cand]))
+        for action, removed, gids in trials:
+            r = assess(amount, savings, salary, None, gids, borrower_id, interest_rate)
+            improved = (band_rank[r["band"]] < band_rank[base["band"]]) or (r["risk_score"] < base["risk_score"] - 3)
+            if improved:
+                cm = _member(cand)
+                results.append({
+                    "action": action, "remove": removed, "add": cand,
+                    "new_score": r["risk_score"], "new_band": r["band"],
+                    "delta": r["risk_score"] - base["risk_score"],
+                    "add_savings": cm.get("savings"), "add_loans_backed": int(cm.get("loans_backed") or 0),
+                    "why": ("stronger savings, clean record, backs few loans"),
+                })
+        if len(results) >= max_suggestions * 3:   # enough good options; stop scoring
+            break
+    # best first: biggest band drop, then biggest score drop
+    results.sort(key=lambda x: (band_rank[x["new_band"]], x["delta"]))
+    # de-dup by the added member, keep the strongest single move per candidate
+    seen, unique = set(), []
+    for r in results:
+        if r["add"] in seen:
+            continue
+        seen.add(r["add"]); unique.append(r)
+    return {"current": current, "suggestions": unique[:max_suggestions],
+            "weakest_current": weakest,
+            "message": "" if unique else "No single guarantor change moved the band; consider a smaller loan or more savings."}
+
+
+def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None,
+           interest_rate=None, guarantor_overrides=None):
+    """Score a loan. `guarantor_overrides` powers the what-if: a map
+    {member_id: {savings, salary, loans_backed, ever_defaulted}} that temporarily patches those
+    guarantors' attributes for THIS call only, so an officer can simulate 'what if this guarantor
+    had more savings, or were not over-committed'. It flows to every guarantor read via _member."""
+    token = _OVERRIDES.set(_clean_overrides(guarantor_overrides))
+    try:
+        return _assess_core(amount, savings, salary, disb_date, guarantor_ids,
+                            borrower_id, interest_rate)
+    finally:
+        _OVERRIDES.reset(token)
+
+
+def _assess_core(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None, interest_rate=None):
     disb = date.fromisoformat(disb_date) if disb_date else date.today()
     guarantor_ids = guarantor_ids or []
     savings = savings or 0.0
@@ -658,7 +856,7 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None, 
             import pandas as pd
             feats = _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id, interest_rate)
             X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
-            proba = float(MODEL.predict_proba(X)[0][1])
+            proba = float(MODEL.predict_proba(X.values)[0][1])
             shap = _shap(feats)
             source = "model"
         except Exception:
@@ -673,18 +871,20 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None, 
     if band != model_band:
         reasons.insert(0, {
             "label": f"Risk level raised to {band}", "direction": "up", "kind": "network",
-            "detail": f"The model scored {round(proba * 100)}/100, but guarantor-network flags raise the "
+            "detail": f"The model scored {_display_score(proba)}/100, but guarantor-network flags raise the "
                       "overall risk level. The model cannot price these reliably on this data, so they "
                       "escalate the band by rule.",
         })
 
     recommendations = _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band)
+    brief = _decision_brief(amount, savings, salary, guarantor_ids, borrower_id, band)
 
     return {
-        "risk_score": round(proba * 100),
+        "risk_score": _display_score(proba),
         "band": band,
         "probability": round(proba, 4),
         "source": source,
+        "brief": brief,
         "reasons": reasons,
         "recommendations": recommendations,
         "shap": shap,

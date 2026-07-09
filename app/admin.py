@@ -151,6 +151,7 @@ async def update_model(
             network_data.reload()
         insights._EW_CACHE["data"] = None   # new model -> recompute early warning
         insights._OV_CACHE["data"] = None    # and the portfolio overview
+        insights._RISK_CACHE["per_loan"] = None  # and the contagion / weak-links index
         from . import members
         members._SAMPLE_CACHE["data"] = None  # and the demo example sample
         info = scoring.model_info()

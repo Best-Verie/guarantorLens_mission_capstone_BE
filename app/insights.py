@@ -22,6 +22,64 @@ _OV_CACHE = {"data": None}
 _EW_CACHE = {"at": 0.0, "data": None}
 _EW_TTL = 600  # seconds
 
+# Shared loan-risk index: score every loan once (model + flag overlay), remember each loan's
+# band/score/exposure and which loans each member backs. Powers both the contagion view and the
+# weak-links ranking, so they never disagree and we only score the book once.
+_RISK_CACHE = {"at": 0.0, "per_loan": None, "by_guar": None}
+
+
+def _risk_index():
+    now = time.time()
+    if _RISK_CACHE["per_loan"] is not None and now - _RISK_CACHE["at"] < _EW_TTL:
+        return _RISK_CACHE["per_loan"], _RISK_CACHE["by_guar"]
+    loans = network_data.LOANS
+    inputs = [{
+        "amount": ln.get("amount", 0) or 0,
+        "savings": scoring.MEMBERS.get(ln.get("borrower"), {}).get("savings"),
+        "salary": scoring.MEMBERS.get(ln.get("borrower"), {}).get("salary"),
+        "disb_date": ln.get("disb_date"), "guarantor_ids": ln.get("guarantors", []),
+        "borrower_id": ln.get("borrower"),
+    } for ln in loans]
+    scores = scoring.score_many(inputs)
+    per_loan, by_guar = {}, {}
+    for ln, (prob, band) in zip(loans, scores):
+        gs = ln.get("guarantors", []) or []
+        rec = {
+            "loan_key": ln["loan_key"], "borrower": ln.get("borrower"),
+            "borrower_uid": scoring.member_uid(ln.get("borrower")),
+            "amount": ln.get("amount", 0) or 0,
+            "band": scoring.adjust_band(band, gs, ln.get("borrower")),
+            "score": scoring._display_score(prob),
+        }
+        per_loan[ln["loan_key"]] = rec
+        for g in gs:
+            by_guar.setdefault(g, []).append(ln["loan_key"])
+    _RISK_CACHE.update(at=now, per_loan=per_loan, by_guar=by_guar)
+    return per_loan, by_guar
+
+
+@router.get("/insights/weak-links")
+def weak_links(limit: int = 12, user: User = Depends(get_current_user)):
+    """Members who are 'single points of failure' in the guarantee network: they back many
+    loans, so if they fail, a lot wobbles at once. Ranked by number of loans backed, with the
+    total exposure and how many of those loans are already high risk."""
+    per_loan, by_guar = _risk_index()
+    rows = []
+    for mid, keys in by_guar.items():
+        if len(keys) < 5:            # only the genuinely concentrated backers
+            continue
+        loans = [per_loan[k] for k in keys]
+        exposure = sum(x["amount"] for x in loans)
+        high = sum(1 for x in loans if x["band"] == "High")
+        m = scoring.MEMBERS.get(mid, {})
+        rows.append({
+            "member_id": mid, "uid": scoring.member_uid(mid),
+            "branch": m.get("branch"), "ever_defaulted": bool(m.get("ever_defaulted", 0)),
+            "loans_backed": len(keys), "high_risk": high, "exposure": exposure,
+        })
+    rows.sort(key=lambda r: (r["loans_backed"], r["exposure"]), reverse=True)
+    return rows[:max(1, min(limit, 50))]
+
 
 @router.get("/watchlist", response_model=List[WatchlistItem])
 def watchlist(user: User = Depends(get_current_user)):
@@ -99,6 +157,26 @@ def super_guarantors(user: User = Depends(get_current_user)):
     for r in rows:
         r["uid"] = scoring.member_uid(r.get("member_id"))
     return rows
+
+
+@router.get("/member/{ref}/contagion")
+def contagion(ref: str, user: User = Depends(get_current_user)):
+    """If this member (as a guarantor) defaulted, what is exposed? Lists the loans they back,
+    each loan's current risk, and the totals - the 'ripple' behind the network story."""
+    member_id = scoring.resolve_member_ref(ref)
+    if member_id is None:
+        return {"member_id": ref, "loans_backed": 0, "high_risk": 0, "exposure": 0.0, "loans": []}
+    per_loan, by_guar = _risk_index()
+    keys = by_guar.get(member_id, [])
+    loans = sorted((per_loan[k] for k in keys), key=lambda x: x["score"], reverse=True)
+    return {
+        "member_id": member_id, "uid": scoring.member_uid(member_id),
+        "loans_backed": len(loans),
+        "high_risk": sum(1 for x in loans if x["band"] == "High"),
+        "medium_risk": sum(1 for x in loans if x["band"] == "Medium"),
+        "exposure": sum(x["amount"] for x in loans),
+        "loans": loans[:12],
+    }
 
 
 @router.get("/insights/communities", response_model=List[CommunityStat])

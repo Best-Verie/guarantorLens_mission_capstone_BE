@@ -43,6 +43,44 @@ def member_examples(user: User = Depends(get_current_user)):
     return {"member_ids": ids, "sample": _SAMPLE_CACHE["data"]}
 
 
+@router.get("/members")
+def list_members(q: str = "", branch: str = "", sort: str = "loans_backed",
+                 order: str = "desc", page: int = 1, page_size: int = 25,
+                 user: User = Depends(get_current_user)):
+    """Browse/search the member directory. Server-side filter + sort + paginate so the UI
+    can show a table over all ~10k members without shipping them all to the browser."""
+    needle = (q or "").strip().lower()
+    rows = list(scoring.MEMBERS.values())
+    if needle:
+        rows = [m for m in rows if needle in str(m.get("member_id", "")).lower()]
+    if branch:
+        rows = [m for m in rows if (m.get("branch") or "") == branch]
+
+    keyf = {
+        "loans_backed": lambda m: m.get("loans_backed") or 0,
+        "savings": lambda m: m.get("savings") or 0,
+        "salary": lambda m: m.get("salary") or 0,
+        "member_id": lambda m: str(m.get("member_id", "")),
+    }.get(sort, lambda m: m.get("loans_backed") or 0)
+    rows.sort(key=keyf, reverse=(order != "asc"))
+
+    total = len(rows)
+    page = max(1, int(page))
+    page_size = min(max(1, int(page_size)), 100)
+    start = (page - 1) * page_size
+    items = [{
+        "member_id": m["member_id"],
+        "uid": scoring.member_uid(m["member_id"]),
+        "branch": m.get("branch"),
+        "savings": m.get("savings"),
+        "salary": m.get("salary"),
+        "loans_backed": int(m.get("loans_backed") or 0),
+        "ever_defaulted": bool(m.get("ever_defaulted", 0)),
+    } for m in rows[start:start + page_size]]
+    branches = sorted({m.get("branch") for m in scoring.MEMBERS.values() if m.get("branch")})
+    return {"items": items, "total": total, "page": page, "page_size": page_size, "branches": branches}
+
+
 @router.get("/network/{ref}", response_model=NetworkView)
 def get_network(ref: str, user: User = Depends(get_current_user)):
     member_id = scoring.resolve_member_ref(ref)

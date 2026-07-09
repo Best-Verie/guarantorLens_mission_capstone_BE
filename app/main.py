@@ -25,6 +25,9 @@ def _ensure_columns():
     if "interest_rate" not in existing:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE applications ADD COLUMN interest_rate FLOAT"))
+    if "guarantor_overrides" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE applications ADD COLUMN guarantor_overrides TEXT"))
 
 
 @asynccontextmanager

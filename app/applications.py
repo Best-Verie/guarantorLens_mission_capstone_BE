@@ -43,6 +43,7 @@ def _app_out(a: Application) -> dict:
         "amount": a.amount, "savings": a.savings, "salary": a.salary,
         "interest_rate": a.interest_rate,
         "guarantor_ids": json.loads(a.guarantor_ids) if a.guarantor_ids else [],
+        "guarantor_overrides": json.loads(a.guarantor_overrides) if a.guarantor_overrides else None,
         "risk_score": a.risk_score, "band": a.band, "probability": a.probability,
         "reasons": json.loads(a.reasons) if a.reasons else [],
         "flags": json.loads(a.flags) if a.flags else [],
@@ -59,7 +60,8 @@ def create_application(body: ApplicationCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="Enter a loan amount.")
     result = scoring.assess(body.amount, body.savings, body.salary, None,
                             body.guarantor_ids, borrower_id=body.borrower_id,
-                            interest_rate=body.interest_rate)
+                            interest_rate=body.interest_rate,
+                            guarantor_overrides=body.guarantor_overrides)
     branch = body.branch
     if not branch and body.borrower_id and "-" in body.borrower_id:
         branch = body.borrower_id.split("-")[0]
@@ -69,6 +71,7 @@ def create_application(body: ApplicationCreate, db: Session = Depends(get_db),
         amount=body.amount, savings=body.savings, salary=body.salary,
         interest_rate=body.interest_rate,
         guarantor_ids=json.dumps(body.guarantor_ids or []),
+        guarantor_overrides=json.dumps(body.guarantor_overrides) if body.guarantor_overrides else None,
         risk_score=result["risk_score"], band=result["band"], probability=result["probability"],
         reasons=json.dumps(result["reasons"]), flags=json.dumps(result["flags"]),
         source=result["source"], status="assessed",

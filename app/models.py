@@ -43,6 +43,7 @@ class Application(Base):
     salary = Column(Float, nullable=True)
     interest_rate = Column(Float, nullable=True)        # loan interest rate (%) if entered
     guarantor_ids = Column(Text, nullable=True)         # JSON list of member ids
+    guarantor_overrides = Column(Text, nullable=True)   # JSON {id: {savings, salary, loans_backed}} what-if patches
 
     # assessment result snapshot
     risk_score = Column(Integer, nullable=True)

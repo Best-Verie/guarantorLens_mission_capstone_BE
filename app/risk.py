@@ -24,4 +24,19 @@ def assess_risk(body: AssessRequest, user: User = Depends(get_current_user)):
         guarantor_ids=body.guarantor_ids,
         borrower_id=body.borrower_id,
         interest_rate=body.interest_rate,
+        guarantor_overrides=body.guarantor_overrides,
+    )
+
+
+@router.post("/assess/suggest-guarantors")
+def suggest_guarantors(body: AssessRequest, user: User = Depends(get_current_user)):
+    """For a Medium/High loan, suggest a single guarantor change (swap the weakest backer, or add
+    one) that would lower the risk band, with the re-scored result. Advice, not a decision."""
+    return scoring.suggest_guarantors(
+        amount=body.amount,
+        savings=body.savings,
+        salary=body.salary,
+        guarantor_ids=body.guarantor_ids,
+        borrower_id=body.borrower_id,
+        interest_rate=body.interest_rate,
     )

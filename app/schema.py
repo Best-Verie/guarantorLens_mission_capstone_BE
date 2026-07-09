@@ -98,6 +98,9 @@ class AssessRequest(BaseModel):
                                              description="YYYY-MM-DD; defaults to today")
     guarantor_ids: List[str] = Field(default_factory=list,
                                      example=["Gasabo-189", "Gasabo-664", "Gasabo-366"])
+    guarantor_overrides: Optional[dict] = Field(
+        None, description="What-if: {member_id: {savings, salary, loans_backed, ever_defaulted}} "
+                          "to temporarily patch guarantor attributes for this scoring only.")
 
 
 class Reason(BaseModel):
@@ -126,6 +129,7 @@ class AssessResponse(BaseModel):
     band: str                # "Low" | "Medium" | "High"
     probability: float
     source: str              # "model" | "heuristic"
+    brief: str = ""          # officer-style plain-English summary of the decision
     reasons: List[Reason]
     recommendations: List[str] = []     # plain, actionable suggestions for the officer
     shap: List[ShapContribution] = []   # model-faithful per-feature contributions
@@ -251,6 +255,7 @@ class ApplicationCreate(BaseModel):
     salary: Optional[float] = None
     interest_rate: Optional[float] = None
     guarantor_ids: List[str] = []
+    guarantor_overrides: Optional[dict] = None   # up-to-date guarantor details entered by the officer
     borrower_id: Optional[str] = None
     borrower_name: Optional[str] = None
     branch: Optional[str] = None
@@ -297,6 +302,7 @@ class ApplicationOut(BaseModel):
     salary: Optional[float] = None
     interest_rate: Optional[float] = None
     guarantor_ids: List[str] = []
+    guarantor_overrides: Optional[dict] = None
     risk_score: Optional[int] = None
     band: Optional[str] = None
     probability: Optional[float] = None
