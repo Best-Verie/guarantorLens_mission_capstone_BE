@@ -23,4 +23,5 @@ def assess_risk(body: AssessRequest, user: User = Depends(get_current_user)):
         disb_date=body.disbursement_date,
         guarantor_ids=body.guarantor_ids,
         borrower_id=body.borrower_id,
+        interest_rate=body.interest_rate,
     )

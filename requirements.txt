@@ -7,10 +7,11 @@ gunicorn
 PyJWT
 python-multipart
 
-# Model serving (assess-risk). scikit-learn is pinned to the training version so
-# the saved model unpickles correctly.
+# Model serving (assess-risk). These are pinned to the TRAINING versions so the saved
+# model unpickles correctly on the server. A version mismatch makes the model fail to
+# load and the API silently falls back to the heuristic. Keep in sync with the notebook.
 scikit-learn==1.6.1
-xgboost
+xgboost==3.2.0
+numpy<2
 joblib
-numpy
 pandas

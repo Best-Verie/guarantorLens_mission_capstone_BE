@@ -93,6 +93,7 @@ class AssessRequest(BaseModel):
     amount: float = Field(..., example=1323000, description="Disbursement amount (RWF)")
     savings: float = Field(0, example=32036, description="Savings balance (RWF)")
     salary: Optional[float] = Field(None, example=91617, description="Monthly salary if on file")
+    interest_rate: Optional[float] = Field(None, example=13, description="Loan interest rate (%) if known")
     disbursement_date: Optional[str] = Field(None, example="2023-02-21",
                                              description="YYYY-MM-DD; defaults to today")
     guarantor_ids: List[str] = Field(default_factory=list,
@@ -248,6 +249,7 @@ class ApplicationCreate(BaseModel):
     amount: float
     savings: float = 0.0
     salary: Optional[float] = None
+    interest_rate: Optional[float] = None
     guarantor_ids: List[str] = []
     borrower_id: Optional[str] = None
     borrower_name: Optional[str] = None
@@ -293,6 +295,7 @@ class ApplicationOut(BaseModel):
     amount: float
     savings: Optional[float] = None
     salary: Optional[float] = None
+    interest_rate: Optional[float] = None
     guarantor_ids: List[str] = []
     risk_score: Optional[int] = None
     band: Optional[str] = None

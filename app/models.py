@@ -41,6 +41,7 @@ class Application(Base):
     amount = Column(Float, nullable=False)
     savings = Column(Float, nullable=True)
     salary = Column(Float, nullable=True)
+    interest_rate = Column(Float, nullable=True)        # loan interest rate (%) if entered
     guarantor_ids = Column(Text, nullable=True)         # JSON list of member ids
 
     # assessment result snapshot

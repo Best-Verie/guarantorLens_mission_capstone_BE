@@ -14,10 +14,27 @@ from .applications import router as applications_router
 from .admin import router as admin_router
 
 
+def _ensure_columns():
+    """Add columns introduced after the table was first created (create_all does not
+    alter existing tables). Safe to run on every startup."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    if "applications" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("applications")}
+    if "interest_rate" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE applications ADD COLUMN interest_rate FLOAT"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create any missing tables (e.g. users) on startup.
+    # Create any missing tables (e.g. users) on startup, then patch in new columns.
     Base.metadata.create_all(bind=engine)
+    try:
+        _ensure_columns()
+    except Exception:
+        pass
     yield
 
 

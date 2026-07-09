@@ -39,6 +39,17 @@ def reload():
     return len(LOANS)
 
 
+def _outcome(ln: dict) -> str:
+    """Display outcome, tolerant of both schemas (old had 'outcome'; new has label/troubled)."""
+    if ln.get("outcome"):
+        return ln["outcome"]
+    if ln.get("label") == 1:
+        return "Written off"
+    if int(ln.get("days_in_arrears") or 0) >= 90 or ln.get("troubled") == 1:
+        return "In arrears"
+    return "Active"
+
+
 def member_detail(member_id: str, members: dict) -> dict:
     """Return loans, backers, guarantees-given, and an ego network for a member."""
     own_loans = BY_BORROWER.get(member_id, [])
@@ -46,10 +57,10 @@ def member_detail(member_id: str, members: dict) -> dict:
 
     loans = [
         {
-            "loan_key": ln["loan_key"],
-            "amount": ln["amount"],
+            "loan_key": ln.get("loan_key"),
+            "amount": ln.get("amount", 0),
             "disb_date": ln.get("disb_date"),
-            "outcome": ln["outcome"],
+            "outcome": _outcome(ln),
             "guarantors": ln.get("guarantors", []),
         }
         for ln in own_loans
@@ -65,7 +76,7 @@ def member_detail(member_id: str, members: dict) -> dict:
                 backers.append(g)
 
     guarantees_given = [
-        {"loan_key": ln["loan_key"], "borrower": ln["borrower"], "outcome": ln["outcome"]}
+        {"loan_key": ln.get("loan_key"), "borrower": ln.get("borrower"), "outcome": _outcome(ln)}
         for ln in backed
     ]
 

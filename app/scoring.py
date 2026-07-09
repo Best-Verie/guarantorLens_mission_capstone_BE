@@ -64,7 +64,11 @@ def _load():
                 bundle.get("bands") or _DEFAULT_BANDS,
                 bundle.get("medians", {}),
                 bundle.get("flag_thresholds", _DEFAULT_FLAGS), "model", meta)
-    except Exception:
+    except Exception as e:
+        # Surface WHY in the server logs (usually a library version mismatch on the host).
+        import logging
+        logging.getLogger("uvicorn.error").warning(
+            "Model bundle failed to load from %s -> serving heuristic. Cause: %r", MODEL_PATH, e)
         return (None, None, members, loans_by_borrower,
                 _DEFAULT_BANDS, {}, _DEFAULT_FLAGS, "heuristic", {})
 
@@ -289,7 +293,7 @@ def _prior_loans(borrower_id, disb) -> int:
     return sum(1 for d in LOANS_BY_BORROWER.get(borrower_id, []) if d < disb)
 
 
-def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id):
+def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id, interest_rate=None):
     """Compute one feature for a single loan. Returns None when it cannot be built
     (the caller then fills it from the training medians)."""
     import numpy as np
@@ -373,21 +377,27 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id)
         return float(np.mean(rates)) if g else 0.0
     if name == "account_age":
         m = _member(borrower_id)
+        od = m.get("opening_date")
+        if od:
+            try:
+                return max(0.0, (disb - date.fromisoformat(str(od)[:10])).days / 365.25)
+            except Exception:
+                pass
         if m.get("account_age") is not None:
             return float(m["account_age"])
         if m.get("account_age_days") is not None:
             return float(m["account_age_days"]) / 365.25
         return None  # no opening date -> impute from medians
     if name == "interest_rate":
-        return None  # not collected at assessment time -> impute from medians (the standard rate)
+        return float(interest_rate) if interest_rate is not None else None
     return None
 
 
-def _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id=None):
+def _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id=None, interest_rate=None):
     """Build the bundle's feature vector for one loan, imputing gaps from medians."""
     out = {}
     for f in FEATURES:
-        v = _feat_value(f, amount, savings, salary, disb, guarantor_ids, borrower_id)
+        v = _feat_value(f, amount, savings, salary, disb, guarantor_ids, borrower_id, interest_rate)
         if v is None or (isinstance(v, float) and v != v):  # None or NaN
             v = float(MEDIANS.get(f, 0.0))
         out[f] = v
@@ -618,7 +628,7 @@ def _heuristic(amount, savings, salary, guarantor_ids, borrower_id):
     return max(0.01, min(0.97, p))
 
 
-def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
+def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None, interest_rate=None):
     disb = date.fromisoformat(disb_date) if disb_date else date.today()
     guarantor_ids = guarantor_ids or []
     savings = savings or 0.0
@@ -646,7 +656,7 @@ def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None):
     if MODEL is not None:
         try:
             import pandas as pd
-            feats = _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id)
+            feats = _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id, interest_rate)
             X = pd.DataFrame([[feats[c] for c in FEATURES]], columns=FEATURES)
             proba = float(MODEL.predict_proba(X)[0][1])
             shap = _shap(feats)

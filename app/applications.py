@@ -41,6 +41,7 @@ def _app_out(a: Application) -> dict:
         "id": a.id, "created_by_name": a.created_by_name, "branch": a.branch,
         "borrower_id": a.borrower_id, "borrower_name": a.borrower_name,
         "amount": a.amount, "savings": a.savings, "salary": a.salary,
+        "interest_rate": a.interest_rate,
         "guarantor_ids": json.loads(a.guarantor_ids) if a.guarantor_ids else [],
         "risk_score": a.risk_score, "band": a.band, "probability": a.probability,
         "reasons": json.loads(a.reasons) if a.reasons else [],
@@ -57,7 +58,8 @@ def create_application(body: ApplicationCreate, db: Session = Depends(get_db),
     if not body.amount or body.amount <= 0:
         raise HTTPException(status_code=400, detail="Enter a loan amount.")
     result = scoring.assess(body.amount, body.savings, body.salary, None,
-                            body.guarantor_ids, borrower_id=body.borrower_id)
+                            body.guarantor_ids, borrower_id=body.borrower_id,
+                            interest_rate=body.interest_rate)
     branch = body.branch
     if not branch and body.borrower_id and "-" in body.borrower_id:
         branch = body.borrower_id.split("-")[0]
@@ -65,6 +67,7 @@ def create_application(body: ApplicationCreate, db: Session = Depends(get_db),
         created_by=user.id, created_by_name=user.full_name, branch=branch,
         borrower_id=body.borrower_id, borrower_name=body.borrower_name,
         amount=body.amount, savings=body.savings, salary=body.salary,
+        interest_rate=body.interest_rate,
         guarantor_ids=json.dumps(body.guarantor_ids or []),
         risk_score=result["risk_score"], band=result["band"], probability=result["probability"],
         reasons=json.dumps(result["reasons"]), flags=json.dumps(result["flags"]),
