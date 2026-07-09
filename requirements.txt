@@ -9,9 +9,10 @@ python-multipart
 
 # Model serving (assess-risk). The saved model is a CalibratedClassifierCV over an
 # imbalanced-learn pipeline, so imbalanced-learn MUST be installed to unpickle it.
-# scikit-learn is pinned to the training version (its pickles are version-sensitive);
-# numpy 2 / newer xgboost load the bundle fine via backward compatibility (verified).
-scikit-learn==1.6.1
+# scikit-learn is pinned to the exact version the bundle was TRAINED/pickled with (1.9.0);
+# sklearn pickles are version-sensitive, and a mismatch triggers InconsistentVersionWarning
+# and risks invalid results. numpy 2 / xgboost 3.3 load the bundle fine (verified).
+scikit-learn==1.9.0
 imbalanced-learn==0.14.2
 xgboost
 numpy
