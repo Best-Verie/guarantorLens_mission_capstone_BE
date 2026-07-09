@@ -148,7 +148,7 @@ def reload():
      FLAG_TH, _LOAD_SOURCE, MODEL_META) = _load()
     BORROWER_HISTORY, GUAR_BACKED = _load_histories()
     _UID_TO_MID.clear()   # member table changed -> rebuild uid map lazily
-    _CANDIDATE_CACHE["data"] = None   # rebuild the strong-guarantor pool from the new table
+    _CANDIDATE_CACHE.clear()   # rebuild the per-branch strong-guarantor pools from the new table
     return _LOAD_SOURCE
 
 
@@ -439,7 +439,12 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id,
             return float(m["account_age"])
         if m.get("account_age_days") is not None:
             return float(m["account_age_days"]) / 365.25
-        return None  # no opening date -> impute from medians
+        # A borrower who is NOT in the system is genuinely new, so treat their tenure as ~0
+        # rather than median-filling it (which would hand a first-time borrower ~6 years of
+        # tenure they do not have, and unfairly LOWER their risk).
+        if borrower_id and borrower_id not in MEMBERS:
+            return 0.0
+        return None  # borrower unknown / not specified -> impute from medians
     if name == "interest_rate":
         return float(interest_rate) if interest_rate is not None else None
     return None
@@ -458,10 +463,10 @@ def _build_features(amount, savings, salary, disb, guarantor_ids, borrower_id=No
 
 FRIENDLY = {
     "log_amount": "Loan amount",
-    "savings": "Savings",
-    "salary": "Salary",
-    "loan_to_savings": "Loan size vs savings",
-    "loan_to_salary": "Loan size vs salary",
+    "savings": "Borrower's savings",
+    "salary": "Borrower's salary",
+    "loan_to_savings": "Loan vs borrower's savings",
+    "loan_to_salary": "Loan vs borrower's salary",
     "n_guarantors": "Number of guarantors",
     "g_prior_default_rate": "Guarantors who defaulted before",
     "g_prior_default_count": "Prior-default guarantors",
@@ -485,8 +490,61 @@ FRIENDLY = {
     "time_since_last_loan": "Time since last loan",
     "g_prior_arrears_rate": "Guarantors' backing record",
     "interest_rate": "Interest rate",
-    "account_age": "Account age",
+    "account_age": "Borrower's account age",
 }
+
+
+def _driver_plain(feature, direction, feats):
+    """A plain-language sentence explaining ONE model driver, so every bar in the drivers
+    chart has a matching human explanation. Uses the actual feature value where it helps."""
+    up = direction == "up"
+    lts = feats.get("loan_to_savings")
+    lta = feats.get("loan_to_salary")
+    D = {
+        "log_amount": ("The loan amount is large, which raises risk.",
+                       "The loan amount is modest, which lowers risk."),
+        "savings": ("The borrower has little savings, which raises risk.",
+                    "The borrower's savings are healthy relative to the loan, which lowers risk."),
+        "salary": ("No salary is on file, so income is unconfirmed.",
+                   "The borrower has a salary on file, which is evidence of income to repay."),
+        "loan_to_savings": (f"The loan is {lts:.0f}x the borrower's savings, a large loan relative to savings." if lts else
+                            "The loan is large relative to the borrower's savings.",
+                            "The loan is small relative to the borrower's savings, which lowers risk."),
+        "loan_to_salary": (f"The loan is {lta:.0f}x the borrower's salary, a heavy load on income." if lta else
+                           "The loan is large relative to the borrower's salary.",
+                           "The loan is modest relative to the borrower's salary."),
+        "account_age": ("The borrower's account is relatively new, so there is less history.",
+                        "The borrower has been a member for a long time, which lowers risk."),
+        "interest_rate": ("The loan's interest rate is on the higher side; the SACCO prices riskier loans higher.",
+                          "The loan's interest rate is low, a sign of a lower-risk loan."),
+        "b_prior_writeoff": ("The borrower has defaulted on a past loan, a strong risk signal.",
+                             "The borrower has no past default on record."),
+        "b_prior_arrears_rate": ("The borrower has fallen into arrears on past loans.",
+                                 "The borrower has a clean repayment record."),
+        "b_prior_loans": ("The borrower has taken several loans before.",
+                          "The borrower has little past borrowing on record."),
+        "b_recent_loans": ("The borrower has taken several loans recently, adding leverage.",
+                           "The borrower has not borrowed much recently."),
+        "time_since_last_loan": ("It has been a while since the borrower's last loan.",
+                                 "The borrower borrowed recently."),
+        "g_prior_arrears_rate": ("The guarantors have backed loans that fell into arrears before, which weakens the guarantee.",
+                                 "The guarantors' past backing record is clean, which strengthens the guarantee."),
+        "g_prior_default_rate": ("One or more guarantors have backed loans that defaulted.",
+                                 "The guarantors have not backed a defaulted loan."),
+        "g_mean_savings": ("The guarantors themselves hold little savings.",
+                           "The guarantors hold savings, which strengthens the guarantee."),
+        "g_mean_salary": ("The guarantors have little salary on file.",
+                          "The guarantors have salaries on file, evidence they could step in."),
+        "g_sav_ratio": ("The guarantors' savings are small relative to the loan.",
+                        "The guarantors' savings are large relative to the loan, which strengthens the guarantee."),
+        "n_guarantors": ("Few guarantors back this loan.",
+                         "Several guarantors back this loan, which spreads the risk."),
+    }
+    pair = D.get(feature)
+    if not pair:
+        label = FRIENDLY.get(feature, feature)
+        return f"{label} { 'raises' if up else 'lowers' } the risk for this loan."
+    return pair[0] if up else pair[1]
 
 
 def _shap(feats: dict, top: int = 6):
@@ -527,9 +585,10 @@ def _shap(feats: dict, top: int = 6):
         out = []
         for i, f in enumerate(FEATURES):  # last entry is the bias term, skipped
             v = float(contribs[i])
+            direction = "up" if v > 0 else "down"
             out.append(
                 {"feature": f, "label": FRIENDLY.get(f, f), "value": round(v, 4),
-                 "direction": "up" if v > 0 else "down"}
+                 "direction": direction, "plain": _driver_plain(f, direction, feats)}
             )
         network_features = set((MODEL_META or {}).get("network_features") or [])
         for item in out:
@@ -619,19 +678,19 @@ def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id
         })
     else:
         reasons.append({
-            "label": f"Savings cover the loan ({ratio:.1f}x)", "direction": "down", "kind": "individual",
-            "detail": "Savings are healthy compared with the loan size, which lowers the score.",
+            "label": f"Borrower's savings cover the loan ({ratio:.1f}x)", "direction": "down", "kind": "individual",
+            "detail": "The borrower's savings are healthy compared with the loan size, which lowers the score.",
         })
 
     if not salary:
         reasons.append({
-            "label": "No salary on file", "direction": "up", "kind": "individual",
-            "detail": "No salary is recorded, so income is harder to confirm.",
+            "label": "Borrower's salary not on file", "direction": "up", "kind": "individual",
+            "detail": "No salary is recorded for the borrower, so income is harder to confirm.",
         })
     else:
         reasons.append({
-            "label": "Salary on file", "direction": "down", "kind": "individual",
-            "detail": "A recorded salary is evidence of income to repay.",
+            "label": "Borrower's salary on file", "direction": "down", "kind": "individual",
+            "detail": "A recorded salary for the borrower is evidence of income to repay.",
         })
 
     if not flags:
@@ -734,22 +793,39 @@ def _heuristic(amount, savings, salary, guarantor_ids, borrower_id):
     return max(0.01, min(0.97, p))
 
 
-_CANDIDATE_CACHE = {"data": None}
+_CANDIDATE_CACHE: dict = {}   # branch -> [member_ids]
 
 
-def _strong_candidates(limit=40):
+def _strong_candidates(branch=None, limit=40):
     """A pool of strong, available guarantors: clean record, not over-committed, real savings.
-    Cached because it only depends on the static member table."""
-    if _CANDIDATE_CACHE["data"] is None:
+    Filtered to `branch` when given, because at this SACCO a member can only guarantee a
+    borrower in their OWN branch. Cached per branch (depends only on the static member table)."""
+    key = branch or "__all__"
+    if key not in _CANDIDATE_CACHE:
         pool = [
             m for m in MEMBERS.values()
             if not m.get("ever_defaulted")
             and (m.get("loans_backed") or 0) < FLAG_TH["over_committed_loads"]
             and (m.get("savings") or 0) > 0
+            and (branch is None or m.get("branch") == branch)
         ]
         pool.sort(key=lambda m: (m.get("savings") or 0), reverse=True)
-        _CANDIDATE_CACHE["data"] = [m["member_id"] for m in pool[:limit]]
-    return _CANDIDATE_CACHE["data"]
+        _CANDIDATE_CACHE[key] = [m["member_id"] for m in pool[:limit]]
+    return _CANDIDATE_CACHE[key]
+
+
+def _borrower_branch(borrower_id, guarantor_ids):
+    """The branch a guarantor must belong to = the borrower's branch. If the borrower is new
+    (no record), fall back to the branch of the guarantors already on the loan, since the
+    same-branch rule means they are in the borrower's branch too."""
+    b = _member(borrower_id).get("branch") if borrower_id else None
+    if b:
+        return b
+    for g in guarantor_ids or []:
+        gb = _member(g).get("branch")
+        if gb:
+            return gb
+    return None
 
 
 def _guarantor_weakness(g):
@@ -772,9 +848,13 @@ def suggest_guarantors(amount, savings, salary, guarantor_ids, borrower_id=None,
     base = assess(amount, savings, salary, None, guarantor_ids, borrower_id, interest_rate)
     current = {"score": base["risk_score"], "band": base["band"]}
     if base["band"] == "Low":
-        return {"current": current, "suggestions": [], "message": "This loan is already low risk."}
+        return {"current": current, "suggestions": [], "branch": None,
+                "message": "This loan is already low risk."}
 
-    candidates = [c for c in _strong_candidates() if c not in guarantor_ids and c != borrower_id]
+    # A guarantor must be in the borrower's own branch, so only search there.
+    branch = _borrower_branch(borrower_id, guarantor_ids)
+    candidates = [c for c in _strong_candidates(branch=branch)
+                  if c not in guarantor_ids and c != borrower_id]
     weakest = max(guarantor_ids, key=_guarantor_weakness) if guarantor_ids else None
     band_rank = {"Low": 0, "Medium": 1, "High": 2}
     results = []
@@ -795,6 +875,7 @@ def suggest_guarantors(amount, savings, salary, guarantor_ids, borrower_id=None,
                     "new_score": r["risk_score"], "new_band": r["band"],
                     "delta": r["risk_score"] - base["risk_score"],
                     "add_savings": cm.get("savings"), "add_loans_backed": int(cm.get("loans_backed") or 0),
+                    "add_branch": cm.get("branch"),
                     "why": ("stronger savings, clean record, backs few loans"),
                 })
         if len(results) >= max_suggestions * 3:   # enough good options; stop scoring
@@ -807,9 +888,12 @@ def suggest_guarantors(amount, savings, salary, guarantor_ids, borrower_id=None,
         if r["add"] in seen:
             continue
         seen.add(r["add"]); unique.append(r)
+    msg = ""
+    if not unique:
+        msg = (f"No same-branch guarantor change moved the band; consider a smaller loan or more savings."
+               if branch else "No single guarantor change moved the band; consider a smaller loan or more savings.")
     return {"current": current, "suggestions": unique[:max_suggestions],
-            "weakest_current": weakest,
-            "message": "" if unique else "No single guarantor change moved the band; consider a smaller loan or more savings."}
+            "weakest_current": weakest, "branch": branch, "message": msg}
 
 
 def assess(amount, savings, salary, disb_date, guarantor_ids, borrower_id=None,

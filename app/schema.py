@@ -122,6 +122,7 @@ class ShapContribution(BaseModel):
     value: float             # signed SHAP value (log-odds); >0 raises risk
     direction: str           # "up" | "down"
     kind: Optional[str] = None  # "individual" | "network"
+    plain: Optional[str] = None  # plain-language explanation of this driver
 
 
 class AssessResponse(BaseModel):
