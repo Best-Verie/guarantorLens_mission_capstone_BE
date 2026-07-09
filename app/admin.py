@@ -92,6 +92,19 @@ def _admin_count(db: Session) -> int:
     return db.query(User).filter(User.role == "admin").count()
 
 
+# --- maintenance ------------------------------------------------------------
+
+@router.delete("/applications", response_model=MessageResponse)
+def clear_applications(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Delete every saved application and its recommendations. Useful after swapping the
+    dataset, when the old applications point at members that no longer exist."""
+    n = db.query(Application).count()
+    db.query(Recommendation).delete(synchronize_session=False)
+    db.query(Application).delete(synchronize_session=False)
+    db.commit()
+    return MessageResponse(message=f"Cleared {n} application(s) and their recommendations.")
+
+
 # --- deployed model ---------------------------------------------------------
 
 @router.get("/model", response_model=ModelCard)

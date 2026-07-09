@@ -9,6 +9,23 @@ from .schema import MemberDetail, NetworkView
 router = APIRouter(tags=["members"])
 
 
+@router.get("/members/examples")
+def member_examples(user: User = Depends(get_current_user)):
+    """A few real member IDs and one ready-made assessment, pulled from whatever data is
+    loaded, so the UI's examples/placeholders always match the deployed dataset."""
+    ids = list(scoring.MEMBERS.keys())[:6]
+    sample = None
+    for ln in network_data.LOANS:
+        gs = ln.get("guarantors") or []
+        if ln.get("borrower") in scoring.MEMBERS and len(gs) >= 2:
+            m = scoring.MEMBERS.get(ln["borrower"], {})
+            sample = {"borrower_id": ln["borrower"], "guarantor_ids": gs[:3],
+                      "amount": ln.get("amount") or 0,
+                      "savings": m.get("savings"), "salary": m.get("salary")}
+            break
+    return {"member_ids": ids, "sample": sample}
+
+
 @router.get("/network/{ref}", response_model=NetworkView)
 def get_network(ref: str, user: User = Depends(get_current_user)):
     member_id = scoring.resolve_member_ref(ref)
