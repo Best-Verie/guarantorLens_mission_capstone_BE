@@ -22,7 +22,7 @@ MEMBERS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_members.json")
 LOANS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_loans.json")
 
 _DEFAULT_BANDS = {"medium": 0.30, "high": 0.60}
-_DEFAULT_FLAGS = {"over_committed_loads": 8, "high_default_community": 0.12}
+_DEFAULT_FLAGS = {"over_committed_loads": 5, "high_default_community": 0.12}
 
 
 def _mkey(m):
@@ -115,6 +115,64 @@ def _load_histories():
 BORROWER_HISTORY, GUAR_BACKED = _load_histories()
 
 
+# COMMUNITY: the borrower's guarantee cluster (connected component of the guarantee graph) and
+# that cluster's historical default rate. Mirrors the notebook's `community_prior_default_rate`.
+# At serve time "now" is after all recorded loans, so the as-of community rate is the full rate.
+_COMMUNITY: dict = {}        # member_id -> community root
+_COMMUNITY_RATE: dict = {}   # community root -> default rate over the cluster's loans
+
+
+def _load_communities():
+    parent = {}
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    try:
+        with open(LOANS_PATH) as fh:
+            loans = json.load(fh)
+    except Exception:
+        return {}, {}
+    for ln in loans:
+        b = ln.get("borrower")
+        if b is None:
+            continue
+        for g in (ln.get("guarantors") or []):
+            union(b, g)
+    agg = {}   # root -> [n_loans, n_bad]
+    for ln in loans:
+        b = ln.get("borrower")
+        if b is None:
+            continue
+        root = find(b)
+        cell = agg.setdefault(root, [0, 0])
+        cell[0] += 1
+        cell[1] += int(ln.get("label", 0) or 0)
+    comm = {m: find(m) for m in parent}
+    rate = {root: (bad / n if n else 0.0) for root, (n, bad) in agg.items()}
+    return comm, rate
+
+
+def _community_rate(borrower_id, guarantor_ids):
+    """The default rate of the cluster this loan connects into (borrower's, else a guarantor's).
+    None for a brand-new, unconnected member (then filled from the training median)."""
+    root = _COMMUNITY.get(borrower_id) if borrower_id else None
+    if root is None:
+        for g in (guarantor_ids or []):
+            if g in _COMMUNITY:
+                root = _COMMUNITY[g]
+                break
+    return _COMMUNITY_RATE.get(root) if root is not None else None
+
+
+_COMMUNITY, _COMMUNITY_RATE = _load_communities()
+
+
 # --- opaque member ids for URLs ---------------------------------------------
 # A member id like "Gasabo-001" is an (anonymised) account number: meaningful and
 # enumerable. We never put it in a URL. Instead URLs carry a stable, opaque uid
@@ -143,10 +201,11 @@ def reload():
     """Re-read the artifacts from disk and swap the in-memory model/tables. Used by the
     admin model-update endpoint after new artifacts are written."""
     global MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS, FLAG_TH, _LOAD_SOURCE, MODEL_META
-    global BORROWER_HISTORY, GUAR_BACKED
+    global BORROWER_HISTORY, GUAR_BACKED, _COMMUNITY, _COMMUNITY_RATE
     (MODEL, FEATURES, MEMBERS, LOANS_BY_BORROWER, BANDS, MEDIANS,
      FLAG_TH, _LOAD_SOURCE, MODEL_META) = _load()
     BORROWER_HISTORY, GUAR_BACKED = _load_histories()
+    _COMMUNITY, _COMMUNITY_RATE = _load_communities()
     _UID_TO_MID.clear()   # member table changed -> rebuild uid map lazily
     _CANDIDATE_CACHE.clear()   # rebuild the per-branch strong-guarantor pools from the new table
     return _LOAD_SOURCE
@@ -375,6 +434,8 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id,
     if name == "g_sav_ratio":
         gms = float(np.mean(sav)) if sav else None
         return None if gms is None else gms / ((savings or 0.0) + 1)
+    if name == "community_prior_default_rate":
+        return _community_rate(borrower_id, guarantor_ids)
     if name == "g_prior_default_rate":
         return float(np.mean([_prior_default(x, disb) for x in g])) if g else 0.0
     if name == "g_prior_default_count":
