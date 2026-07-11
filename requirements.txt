@@ -9,12 +9,12 @@ python-multipart
 
 # Model serving (assess-risk). The saved model is a CalibratedClassifierCV over an
 # imbalanced-learn pipeline, so imbalanced-learn MUST be installed to unpickle it.
-# scikit-learn is pinned to the exact version the bundle was TRAINED/pickled with (1.9.0);
-# sklearn pickles are version-sensitive, and a mismatch triggers InconsistentVersionWarning
-# and risks invalid results. numpy 2 / xgboost 3.3 load the bundle fine (verified).
-scikit-learn==1.9.0
-imbalanced-learn==0.14.2
-xgboost
-numpy
+# scikit-learn MUST match the version the bundle was pickled with, or the model fails to load
+# and the app falls back to the rule-based heuristic. The Colab-trained bundle is **1.6.1**
+# (confirmed by the InconsistentVersionWarning on Render when running 1.9.0), so pin 1.6.1.
+scikit-learn==1.6.1          # MUST equal the bundle's pickle version (else rule-based fallback)
+imbalanced-learn==0.14.2     # required to unpickle the imblearn Pipeline inside the bundle
+xgboost<4                    # bundle booster is 3.2.0; xgboost 3.x loads it, guard against v4
+numpy<3                      # bundle arrays are numpy 1.x; numpy 2.x loads them, guard against v3
 joblib
 pandas
