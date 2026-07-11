@@ -138,6 +138,11 @@ def add_recommendation(app_id: int, body: RecommendationCreate, db: Session = De
     a = db.get(Application, app_id)
     if a is None:
         raise HTTPException(status_code=404, detail="Application not found.")
+    # Separation of duties: only a credit manager (or admin) records the recommendation.
+    # A loan officer proposes and escalates; they cannot approve/decline (least of all their own).
+    if not _is_manager(user):
+        raise HTTPException(status_code=403,
+                            detail="Only a credit manager can add a recommendation.")
     if body.decision not in {"approve", "request_changes", "decline"}:
         raise HTTPException(status_code=400, detail="Invalid recommendation.")
     rec = Recommendation(application_id=a.id, author_id=user.id, author_name=user.full_name,
