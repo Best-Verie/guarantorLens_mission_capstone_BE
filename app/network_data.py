@@ -76,7 +76,8 @@ def member_detail(member_id: str, members: dict) -> dict:
                 backers.append(g)
 
     guarantees_given = [
-        {"loan_key": ln.get("loan_key"), "borrower": ln.get("borrower"), "outcome": _outcome(ln)}
+        {"loan_key": ln.get("loan_key"), "borrower": ln.get("borrower"),
+         "amount": ln.get("amount", 0), "outcome": _outcome(ln)}
         for ln in backed
     ]
 

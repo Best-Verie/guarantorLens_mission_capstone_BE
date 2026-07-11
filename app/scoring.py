@@ -422,9 +422,9 @@ def _feat_value(name, amount, savings, salary, disb, guarantor_ids, borrower_id,
     if name == "salary":
         return float(salary)
     if name == "loan_to_savings":
-        return amount / (savings + 1)
+        return amount / (savings + 1) if savings else None   # missing savings -> median-fill (matches training)
     if name == "loan_to_salary":
-        return amount / (salary + 1)
+        return amount / (salary + 1) if salary else None      # missing salary -> median-fill (matches training)
     if name == "n_guarantors":
         return len(g)
     if name == "g_mean_savings":
@@ -543,6 +543,7 @@ FRIENDLY = {
     "g_mean_savings": "Guarantors' savings",
     "g_mean_salary": "Guarantors' salary",
     "g_sav_ratio": "Guarantors' savings vs the loan",
+    "community_prior_default_rate": "Guarantee network's default history",
     "b_prior_loans": "Borrower's past loans",
     "b_prior_writeoff": "Borrower defaulted before",
     "b_account_age": "Borrower account age",
@@ -559,15 +560,27 @@ def _driver_plain(feature, direction, feats):
     """A plain-language sentence explaining ONE model driver, so every bar in the drivers
     chart has a matching human explanation. Uses the actual feature value where it helps."""
     up = direction == "up"
+    # With no guarantors attached, guarantor features are just median-fill artifacts -
+    # never claim a guarantee that does not exist.
+    if (feats.get("n_guarantors") or 0) == 0 and (feature.startswith("g_") or feature == "n_guarantors"):
+        return "No guarantors are attached to this loan."
     lts = feats.get("loan_to_savings")
     lta = feats.get("loan_to_salary")
+    sal = feats.get("salary")
+    # drive the salary text by whether a salary is actually on file, not by the SHAP direction:
+    # a missing salary is always "not on file"; a present-but-low salary raises risk.
+    if not sal:
+        salary_pair = ("No salary is on file, so income is unconfirmed.",
+                       "No salary is on file, so income is unconfirmed.")
+    else:
+        salary_pair = ("The borrower's salary is modest for a loan this size, which adds some risk.",
+                       "The borrower has a salary on file, which is evidence of income to repay.")
     D = {
         "log_amount": ("The loan amount is large, which raises risk.",
                        "The loan amount is modest, which lowers risk."),
         "savings": ("The borrower has little savings, which raises risk.",
                     "The borrower's savings are healthy relative to the loan, which lowers risk."),
-        "salary": ("No salary is on file, so income is unconfirmed.",
-                   "The borrower has a salary on file, which is evidence of income to repay."),
+        "salary": salary_pair,
         "loan_to_savings": (f"The loan is {lts:.0f}x the borrower's savings, a large loan relative to savings." if lts else
                             "The loan is large relative to the borrower's savings.",
                             "The loan is small relative to the borrower's savings, which lowers risk."),
@@ -600,6 +613,8 @@ def _driver_plain(feature, direction, feats):
                         "The guarantors' savings are large relative to the loan, which strengthens the guarantee."),
         "n_guarantors": ("Few guarantors back this loan.",
                          "Several guarantors back this loan, which spreads the risk."),
+        "community_prior_default_rate": ("The borrower's wider guarantee network has a high past-default rate, which raises risk.",
+                                         "The borrower's wider guarantee network has a clean past-default record, which lowers risk."),
     }
     pair = D.get(feature)
     if not pair:
@@ -643,8 +658,15 @@ def _shap(feats: dict, top: int = 6):
         else:
             contribs = booster_contribs(MODEL)
 
+        # with no guarantors, the guarantor-property features are pure median-fill artifacts;
+        # don't surface them as drivers (n_guarantors stays - "no guarantors" is a real factor).
+        no_guar = (feats.get("n_guarantors") or 0) == 0
+        skip = {"g_mean_savings", "g_mean_salary", "g_sav_ratio",
+                "g_prior_default_rate", "g_prior_arrears_rate"} if no_guar else set()
         out = []
         for i, f in enumerate(FEATURES):  # last entry is the bias term, skipped
+            if f in skip:
+                continue
             v = float(contribs[i])
             direction = "up" if v > 0 else "down"
             out.append(

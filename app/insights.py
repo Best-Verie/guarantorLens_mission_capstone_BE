@@ -207,7 +207,7 @@ def early_warning(user: User = Depends(get_current_user)):
         "loan_key": ln["loan_key"], "borrower": ln.get("borrower"),
         "borrower_uid": scoring.member_uid(ln.get("borrower")), "branch": ln.get("branch"),
         "amount": ln.get("amount", 0), "days_in_arrears": int(ln.get("days_in_arrears", 0) or 0),
-        "risk_score": round(prob * 100),
+        "risk_score": scoring._display_score(prob),   # band-aligned score (High reads 70+, not 5)
         # same leak-free flag overlay as the assessment card
         "band": scoring.adjust_band(band, ln.get("guarantors", []), ln.get("borrower")),
     } for ln, (prob, band) in zip(active, scores)]
