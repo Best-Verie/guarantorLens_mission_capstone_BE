@@ -306,6 +306,18 @@ def _display_score(p: float) -> int:
 
 
 _BAND_ORDER = ["Low", "Medium", "High"]
+_BAND_FLOOR = {"Low": 0, "Medium": 40, "High": 70}
+
+
+def _display_for_band(p: float, band: str) -> int:
+    """Display score that never contradicts the (possibly flag-escalated) band.
+
+    The raw display score comes from the model probability, but adjust_band can raise the
+    band on a leak-free rule (an over-committed or defaulter-backed guarantee) without
+    changing the probability. Without this, a flagged loan reads e.g. 'High 46/100'. Since
+    adjust_band only ever raises the band, we lift the score to that band's floor, so a
+    flag-escalated loan reads High 70+, and the what-if delta moves the right way."""
+    return max(_display_score(p), _BAND_FLOOR.get(band, 0))
 
 
 def _bump(band: str, steps: int = 1) -> str:
@@ -1056,7 +1068,7 @@ def _assess_core(amount, savings, salary, disb_date, guarantor_ids, borrower_id=
     brief = _decision_brief(amount, savings, salary, guarantor_ids, borrower_id, band)
 
     return {
-        "risk_score": _display_score(proba),
+        "risk_score": _display_for_band(proba, band),
         "band": band,
         "probability": round(proba, 4),
         "source": source,

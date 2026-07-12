@@ -44,12 +44,13 @@ def _risk_index():
     per_loan, by_guar = {}, {}
     for ln, (prob, band) in zip(loans, scores):
         gs = ln.get("guarantors", []) or []
+        adj_band = scoring.adjust_band(band, gs, ln.get("borrower"))
         rec = {
             "loan_key": ln["loan_key"], "borrower": ln.get("borrower"),
             "borrower_uid": scoring.member_uid(ln.get("borrower")),
             "amount": ln.get("amount", 0) or 0,
-            "band": scoring.adjust_band(band, gs, ln.get("borrower")),
-            "score": scoring._display_score(prob),
+            "band": adj_band,
+            "score": scoring._display_for_band(prob, adj_band),
         }
         per_loan[ln["loan_key"]] = rec
         for g in gs:
@@ -207,8 +208,8 @@ def early_warning(user: User = Depends(get_current_user)):
         "loan_key": ln["loan_key"], "borrower": ln.get("borrower"),
         "borrower_uid": scoring.member_uid(ln.get("borrower")), "branch": ln.get("branch"),
         "amount": ln.get("amount", 0), "days_in_arrears": int(ln.get("days_in_arrears", 0) or 0),
-        "risk_score": scoring._display_score(prob),   # band-aligned score (High reads 70+, not 5)
-        # same leak-free flag overlay as the assessment card
+        # band-aligned score, consistent with the flag-escalated band (High reads 70+, not 46)
+        "risk_score": scoring._display_for_band(prob, scoring.adjust_band(band, ln.get("guarantors", []), ln.get("borrower"))),
         "band": scoring.adjust_band(band, ln.get("guarantors", []), ln.get("borrower")),
     } for ln, (prob, band) in zip(active, scores)]
     items.sort(key=lambda x: x["risk_score"], reverse=True)
