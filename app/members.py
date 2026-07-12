@@ -63,6 +63,9 @@ def list_members(q: str = "", branch: str = "", sort: str = "loans_backed",
         "member_id": lambda m: str(m.get("member_id", "")),
     }.get(sort, lambda m: m.get("loans_backed") or 0)
     rows.sort(key=keyf, reverse=(order != "asc"))
+    # Borrowers (members who have taken at least one loan) come first, then pure guarantors
+    # who only ever backed others' loans. Stable sort, so the column order holds within each group.
+    rows.sort(key=lambda m: m.get("member_id") in network_data.BY_BORROWER, reverse=True)
 
     total = len(rows)
     page = max(1, int(page))
