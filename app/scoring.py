@@ -658,11 +658,20 @@ def _shap(feats: dict, top: int = 6):
         else:
             contribs = booster_contribs(MODEL)
 
-        # with no guarantors, the guarantor-property features are pure median-fill artifacts;
-        # don't surface them as drivers (n_guarantors stays - "no guarantors" is a real factor).
+        # median-fill artifacts must not masquerade as real drivers:
+        #  - with no guarantors, the guarantor-property features are just fill values
+        #    (n_guarantors stays - "no guarantors" is a real factor);
+        #  - with no salary on file, salary is stored as 0 and loan_to_salary is filled, so the
+        #    model's contribution for them is an artifact, not a signal about this borrower. Showing
+        #    "no salary on file" as a green "lowers risk" driver is misleading, so drop both.
         no_guar = (feats.get("n_guarantors") or 0) == 0
-        skip = {"g_mean_savings", "g_mean_salary", "g_sav_ratio",
-                "g_prior_default_rate", "g_prior_arrears_rate"} if no_guar else set()
+        no_sal = not feats.get("salary")
+        skip = set()
+        if no_guar:
+            skip |= {"g_mean_savings", "g_mean_salary", "g_sav_ratio",
+                     "g_prior_default_rate", "g_prior_arrears_rate"}
+        if no_sal:
+            skip |= {"salary", "loan_to_salary"}
         out = []
         for i, f in enumerate(FEATURES):  # last entry is the bias term, skipped
             if f in skip:
