@@ -78,3 +78,54 @@ class Recommendation(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     application = relationship("Application", back_populates="recommendations")
+
+
+# --- Reference dataset (the anonymised SACCO member/loan/guarantee network) ------------
+# Seeded from the JSON artifacts and used read-only for scoring and the network views.
+
+class Member(Base):
+    __tablename__ = "members"
+
+    member_id = Column(String(60), primary_key=True, index=True)
+    branch = Column(String(60), nullable=True)
+    savings = Column(Float, nullable=True)
+    salary = Column(Float, nullable=True)
+    ever_defaulted = Column(Integer, nullable=True, default=0)
+    loans_backed = Column(Integer, nullable=True, default=0)
+    opening_date = Column(String(20), nullable=True)
+
+
+class Loan(Base):
+    __tablename__ = "loans"
+
+    loan_key = Column(String(60), primary_key=True, index=True)
+    borrower = Column(String(60), index=True, nullable=True)
+    amount = Column(Float, nullable=True)
+    disb_date = Column(String(20), nullable=True)
+    branch = Column(String(60), nullable=True)
+    label = Column(Integer, nullable=True)              # 1 = written off, 0 = normal
+    outcome = Column(String(30), nullable=True)
+    days_in_arrears = Column(Integer, nullable=True)
+    payment_status = Column(String(30), nullable=True)
+    troubled = Column(Integer, nullable=True)
+
+
+class Guarantee(Base):
+    __tablename__ = "guarantees"
+
+    id = Column(Integer, primary_key=True, index=True)
+    loan_key = Column(String(60), ForeignKey("loans.loan_key"), index=True, nullable=False)
+    guarantor = Column(String(60), index=True, nullable=False)   # member_id of the guarantor
+
+
+class DatasetSeed(Base):
+    """One row recording the last seed: proves the reference data was deleted and re-seeded,
+    with a timestamp and the resulting row counts."""
+    __tablename__ = "dataset_seed"
+
+    id = Column(Integer, primary_key=True, index=True)
+    seeded_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    members = Column(Integer, default=0)
+    loans = Column(Integer, default=0)
+    guarantees = Column(Integer, default=0)
+    deleted = Column(Integer, default=0)      # rows removed from the previous dataset

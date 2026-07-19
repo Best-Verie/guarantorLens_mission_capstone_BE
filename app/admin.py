@@ -112,6 +112,15 @@ def model_card(admin: User = Depends(require_admin)):
     return scoring.model_info()
 
 
+@router.get("/dataset")
+def dataset_info(admin: User = Depends(require_admin)):
+    """Proof of the last reference-data seed: when it was seeded, how many members/loans/
+    guarantees resulted, and how many old rows were deleted. Changes on every upload."""
+    from . import data_store
+    return data_store.seed_info() or {"seeded_at": None, "members": 0, "loans": 0,
+                                       "guarantees": 0, "deleted": 0}
+
+
 @router.post("/model", response_model=ModelCard)
 async def update_model(
     model: UploadFile = File(..., description="joblib bundle with 'model' and 'features'"),
@@ -136,18 +145,23 @@ async def update_model(
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 "Bundle must be a dict containing 'model' and 'features'.")
 
-        members_path = _validated_json(members, tmpdir, "members.json") if members else None
-        loans_path = _validated_json(loans, tmpdir, "loans.json") if loans else None
+        members_data = _validated_records(members, "members.json") if members else None
+        loans_data = _validated_records(loans, "loans.json") if loans else None
 
-        # everything validated -> move into place
+        # everything validated -> swap the model file
         shutil.move(mpath, scoring.MODEL_PATH)
-        if members_path:
-            shutil.move(members_path, scoring.MEMBERS_PATH)
-        if loans_path:
-            shutil.move(loans_path, scoring.LOANS_PATH)
+
+        # re-seed the reference dataset in the database (this persists across redeploys,
+        # unlike the old file-based upload). If only one file is given, keep the other.
+        reseeded = members_data is not None or loans_data is not None
+        if reseeded:
+            from . import data_store
+            md = members_data if members_data is not None else list(data_store.load_members().values())
+            ld = loans_data if loans_data is not None else data_store.load_loans()
+            data_store.reseed(md, ld)
 
         scoring.reload()
-        if loans_path:
+        if reseeded:
             network_data.reload()
         insights._EW_CACHE["data"] = None   # new model -> recompute early warning
         insights._OV_CACHE["data"] = None    # and the portfolio overview
@@ -163,7 +177,7 @@ async def update_model(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _validated_json(upload: UploadFile, tmpdir: str, name: str) -> str:
+def _validated_records(upload: UploadFile, name: str) -> list:
     raw = upload.file.read()
     try:
         data = json.loads(raw)
@@ -171,10 +185,7 @@ def _validated_json(upload: UploadFile, tmpdir: str, name: str) -> str:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{name} is not valid JSON.")
     if not isinstance(data, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{name} must be a JSON list of records.")
-    path = os.path.join(tmpdir, name)
-    with open(path, "wb") as fh:
-        fh.write(raw)
-    return path
+    return data
 
 
 # --- activity ---------------------------------------------------------------

@@ -12,9 +12,9 @@ MAX_NEIGHBOURS = 40
 
 
 def _load():
+    from . import data_store
     try:
-        with open(LOANS_PATH) as fh:
-            loans = json.load(fh)
+        loans = data_store.load_loans()
     except Exception:
         loans = []
     by_borrower = defaultdict(list)   # member -> loans they took

@@ -16,6 +16,8 @@ import uuid
 from bisect import bisect_left
 from datetime import date
 
+from . import data_store
+
 ARTIFACT_DIR = os.path.join(os.path.dirname(__file__), "artifacts")
 MODEL_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_serving.joblib")
 MEMBERS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_members.json")
@@ -31,26 +33,23 @@ def _mkey(m):
 
 
 def _load():
-    members = {}
     try:
-        with open(MEMBERS_PATH) as fh:
-            members = {_mkey(m): m for m in json.load(fh) if _mkey(m) is not None}
+        members = data_store.load_members()
     except Exception:
         members = {}
 
     # borrower -> sorted list of their loan disbursement dates, for as-of prior-loan counts
     loans_by_borrower = {}
     try:
-        with open(LOANS_PATH) as fh:
-            for ln in json.load(fh):
-                bid = ln.get("borrower") if ln.get("borrower") is not None else ln.get("member")
-                d = ln.get("disb_date") or ln.get("disb")
-                if bid is None or not d:
-                    continue
-                try:
-                    loans_by_borrower.setdefault(bid, []).append(date.fromisoformat(str(d)[:10]))
-                except Exception:
-                    pass
+        for ln in data_store.load_loans():
+            bid = ln.get("borrower") if ln.get("borrower") is not None else ln.get("member")
+            d = ln.get("disb_date") or ln.get("disb")
+            if bid is None or not d:
+                continue
+            try:
+                loans_by_borrower.setdefault(bid, []).append(date.fromisoformat(str(d)[:10]))
+            except Exception:
+                pass
         for v in loans_by_borrower.values():
             v.sort()
     except Exception:
@@ -88,21 +87,20 @@ GUAR_BACKED: dict = {}
 def _load_histories():
     bh, gb = {}, {}
     try:
-        with open(LOANS_PATH) as fh:
-            for ln in json.load(fh):
-                d = ln.get("disb_date") or ln.get("disb")
-                if not d:
-                    continue
-                try:
-                    dt = date.fromisoformat(str(d)[:10])
-                except Exception:
-                    continue
-                troubled = int(ln.get("troubled", ln.get("label", 0)) or 0)
-                bid = ln.get("borrower") if ln.get("borrower") is not None else ln.get("member")
-                if bid is not None:
-                    bh.setdefault(bid, []).append((dt, troubled))
-                for guar in (ln.get("guarantors") or []):
-                    gb.setdefault(guar, []).append((dt, troubled))
+        for ln in data_store.load_loans():
+            d = ln.get("disb_date") or ln.get("disb")
+            if not d:
+                continue
+            try:
+                dt = date.fromisoformat(str(d)[:10])
+            except Exception:
+                continue
+            troubled = int(ln.get("troubled", ln.get("label", 0)) or 0)
+            bid = ln.get("borrower") if ln.get("borrower") is not None else ln.get("member")
+            if bid is not None:
+                bh.setdefault(bid, []).append((dt, troubled))
+            for guar in (ln.get("guarantors") or []):
+                gb.setdefault(guar, []).append((dt, troubled))
         for v in bh.values():
             v.sort()
         for v in gb.values():
@@ -134,8 +132,7 @@ def _load_communities():
         if ra != rb:
             parent[ra] = rb
     try:
-        with open(LOANS_PATH) as fh:
-            loans = json.load(fh)
+        loans = data_store.load_loans()
     except Exception:
         return {}, {}
     for ln in loans:
@@ -555,9 +552,9 @@ FRIENDLY = {
     "g_mean_savings": "Guarantors' savings",
     "g_mean_salary": "Guarantors' salary",
     "g_sav_ratio": "Guarantors' savings vs the loan",
-    "community_prior_default_rate": "Guarantee network's default history",
+    "community_prior_default_rate": "Guarantee network's write-off history",
     "b_prior_loans": "Borrower's past loans",
-    "b_prior_writeoff": "Borrower defaulted before",
+    "b_prior_writeoff": "Borrower written off before",
     "b_account_age": "Borrower account age",
     "b_prior_arrears_rate": "Borrower's past arrears",
     "b_recent_loans": "Borrower's recent loans",
@@ -603,8 +600,8 @@ def _driver_plain(feature, direction, feats):
                         "The borrower has been a member for a long time, which lowers risk."),
         "interest_rate": ("The loan's interest rate is on the higher side; the SACCO prices riskier loans higher.",
                           "The loan's interest rate is low, a sign of a lower-risk loan."),
-        "b_prior_writeoff": ("The borrower has defaulted on a past loan, a strong risk signal.",
-                             "The borrower has no past default on record."),
+        "b_prior_writeoff": ("The borrower had a loan written off before, a strong risk signal.",
+                             "The borrower has no past write-off on record."),
         "b_prior_arrears_rate": ("The borrower has fallen into arrears on past loans.",
                                  "The borrower has a clean repayment record."),
         "b_prior_loans": ("The borrower has taken several loans before.",
@@ -615,8 +612,8 @@ def _driver_plain(feature, direction, feats):
                                  "The borrower borrowed recently."),
         "g_prior_arrears_rate": ("The guarantors have backed loans that fell into arrears before, which weakens the guarantee.",
                                  "The guarantors' past backing record is clean, which strengthens the guarantee."),
-        "g_prior_default_rate": ("One or more guarantors have backed loans that defaulted.",
-                                 "The guarantors have not backed a defaulted loan."),
+        "g_prior_default_rate": ("One or more guarantors have backed a loan that was written off.",
+                                 "The guarantors have not backed a written-off loan."),
         "g_mean_savings": ("The guarantors themselves hold little savings.",
                            "The guarantors hold savings, which strengthens the guarantee."),
         "g_mean_salary": ("The guarantors have little salary on file.",
@@ -625,8 +622,8 @@ def _driver_plain(feature, direction, feats):
                         "The guarantors' savings are large relative to the loan, which strengthens the guarantee."),
         "n_guarantors": ("Few guarantors back this loan.",
                          "Several guarantors back this loan, which spreads the risk."),
-        "community_prior_default_rate": ("The borrower's wider guarantee network has a high past-default rate, which raises risk.",
-                                         "The borrower's wider guarantee network has a clean past-default record, which lowers risk."),
+        "community_prior_default_rate": ("The borrower's wider guarantee network has a high past-write-off rate, which raises risk.",
+                                         "The borrower's wider guarantee network has a clean past-write-off record, which lowers risk."),
     }
     pair = D.get(feature)
     if not pair:
@@ -713,10 +710,10 @@ def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id
 
     defaulters = [g for g in guarantor_ids if _member(g).get("ever_defaulted") == 1]
     if defaulters:
-        flags.append(f"Backed by {len(defaulters)} guarantor(s) who have defaulted before")
+        flags.append(f"Backed by {len(defaulters)} guarantor(s) written off before")
         reasons.append({
-            "label": "A guarantor has defaulted before", "direction": "up", "kind": "network",
-            "detail": "One or more guarantors failed to repay a loan in the past: " + ", ".join(defaulters),
+            "label": "A guarantor was written off before", "direction": "up", "kind": "network",
+            "detail": "One or more guarantors had a loan written off in the past: " + ", ".join(defaulters),
         })
 
     heavy = [(g, _member(g).get("loans_backed", 0)) for g in guarantor_ids
@@ -730,9 +727,9 @@ def _flags_and_reasons(amount, savings, salary, disb, guarantor_ids, borrower_id
 
     cdr = _member(borrower_id).get("community_default_rate", 0.0) if borrower_id else 0.0
     if cdr >= FLAG_TH["high_default_community"]:
-        flags.append(f"Borrower in a high-default group ({cdr:.0%} default history)")
+        flags.append(f"Borrower in a high-write-off group ({cdr:.0%} write-off history)")
         reasons.append({
-            "label": "High-default community", "direction": "up", "kind": "network",
+            "label": "High-write-off community", "direction": "up", "kind": "network",
             "detail": "The borrower sits in a guarantee group where many loans have gone bad.",
         })
 
@@ -806,7 +803,7 @@ def _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band):
     """Plain, actionable suggestions an officer could act on. Advice, not a decision."""
     recs = []
     if any(_member(g).get("ever_defaulted") == 1 for g in guarantor_ids):
-        recs.append("Replace or add a guarantor: one of the current backers has defaulted before.")
+        recs.append("Replace or add a guarantor: one of the current backers was written off before.")
     heavy = [g for g in guarantor_ids if (_member(g).get("loans_backed") or 0) >= FLAG_TH["over_committed_loads"]]
     if heavy:
         recs.append("Add a guarantor who is backing fewer loans, so the guarantee is not stretched thin.")
@@ -819,7 +816,7 @@ def _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band):
         recs.append("Confirm the borrower's income before approving; no salary is on file.")
     cdr = _member(borrower_id).get("community_default_rate", 0.0) if borrower_id else 0.0
     if cdr >= FLAG_TH["high_default_community"]:
-        recs.append("Take a closer look at the borrower's guarantee group; it has a high default history.")
+        recs.append("Take a closer look at the borrower's guarantee group; it has a high write-off history.")
     if band == "High":
         recs.append("Escalate to a credit manager for a second review before deciding.")
     if not recs:
@@ -846,7 +843,7 @@ def _decision_brief(amount, savings, salary, guarantor_ids, borrower_id, band):
     else:
         borrower = "The borrower has thin savings against the loan"
     if borrower_id and _member(borrower_id).get("ever_defaulted") == 1:
-        borrower += ", and they have defaulted on a past loan"
+        borrower += ", and they had a loan written off before"
     elif not salary:
         borrower += ", and no salary is on file"
     borrower += "."
@@ -861,7 +858,7 @@ def _decision_brief(amount, savings, salary, guarantor_ids, borrower_id, band):
         guarantee = "No guarantors are attached to this loan."
     else:
         if defaulters:
-            gparts.append(f"{len(defaulters)} of {len(guarantor_ids)} guarantors have defaulted before")
+            gparts.append(f"{len(defaulters)} of {len(guarantor_ids)} guarantors written off before")
         if heavy:
             gparts.append(f"{len(heavy)} guarantor(s) are over-committed, backing many loans at once")
         if gcover is not None and gcover >= 0.5:
