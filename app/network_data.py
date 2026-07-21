@@ -178,13 +178,33 @@ def watchlist(members: dict, min_days: int = 90, limit: int = 300) -> list:
     for ln in LOANS:
         if ln.get("payment_status", "").lower() == "active" and ln.get("days_in_arrears", 0) >= min_days:
             gids = ln.get("guarantors", [])
+            b = members.get(ln["borrower"], {})
+            backed_by_defaulter = any(members.get(g, {}).get("ever_defaulted") == 1 for g in gids)
+            amt = ln.get("amount") or 0
+            bsav = b.get("savings")
+            # The strongest available risk signal (leak-free, from the member/loan tables), so the
+            # column shows WHAT is driving the risk, not just whether a network flag fired. Priority
+            # order mirrors the scoring flags/reasons; over-committed threshold matches scoring (5).
+            if backed_by_defaulter:
+                reason = "Backed by a written-off member"
+            elif b.get("ever_defaulted") == 1:
+                reason = "Borrower written off before"
+            elif any((members.get(g, {}).get("loans_backed") or 0) >= 5 for g in gids):
+                reason = "Over-committed guarantor"
+            elif bsav is not None and amt and amt / (bsav + 1) >= 3:
+                reason = "Loan large vs borrower's savings"
+            elif b.get("salary") is None:
+                reason = "No income on file"
+            else:
+                reason = ""
             items.append({
                 "loan_key": ln["loan_key"],
                 "borrower": ln["borrower"],
                 "branch": ln.get("branch"),
                 "amount": ln["amount"],
                 "days_in_arrears": ln.get("days_in_arrears", 0),
-                "backed_by_defaulter": any(members.get(g, {}).get("ever_defaulted") == 1 for g in gids),
+                "backed_by_defaulter": backed_by_defaulter,
+                "reason": reason,
             })
     items.sort(key=lambda x: x["days_in_arrears"], reverse=True)
     return items[:limit]

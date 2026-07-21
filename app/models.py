@@ -51,6 +51,8 @@ class Application(Base):
     probability = Column(Float, nullable=True)
     reasons = Column(Text, nullable=True)               # JSON
     flags = Column(Text, nullable=True)                 # JSON
+    segment = Column(Text, nullable=True)               # JSON: borrower segment (KMeans) at assess time
+    unusual = Column(Text, nullable=True)               # JSON: anomaly flag (Isolation Forest) at assess time
     source = Column(String(20), nullable=True)
 
     # workflow

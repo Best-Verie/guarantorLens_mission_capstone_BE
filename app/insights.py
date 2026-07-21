@@ -216,3 +216,59 @@ def early_warning(user: User = Depends(get_current_user)):
     _EW_CACHE["data"] = items[:300]
     _EW_CACHE["at"] = now
     return _EW_CACHE["data"]
+
+
+# --- survival analysis (time-to-default) ------------------------------------
+_SURV_CACHE = {"data": None}
+
+
+@router.get("/insights/survival")
+def survival(user: User = Depends(get_current_user)):
+    """Kaplan-Meier survival: the share of loans still performing as months pass, overall and by
+    loan-size tier. 'Time' is months-on-book from disbursement to a fixed observation date, and a
+    write-off is the event (repaid/active loans are censored). Computed once, then cached."""
+    if _SURV_CACHE["data"] is not None:
+        return _SURV_CACHE["data"]
+    import datetime as _dt
+    OBS = _dt.date(2024, 12, 31)
+    rows = []   # (months, event, amount)
+    for ln in network_data.LOANS:
+        d = ln.get("disb_date")
+        if not d:
+            continue
+        try:
+            dd = _dt.date.fromisoformat(str(d)[:10])
+        except Exception:
+            continue
+        months = max(1, round((OBS - dd).days / 30.44))
+        rows.append((months, 1 if ln.get("label") == 1 else 0, ln.get("amount") or 0))
+
+    def km(sub):
+        S, out = 1.0, []
+        for t in sorted({m for m, _ in sub}):
+            at_risk = sum(1 for m, _ in sub if m >= t)
+            dead = sum(1 for m, e in sub if m == t and e == 1)
+            if at_risk:
+                S *= (1 - dead / at_risk)
+            out.append({"month": int(t), "survival": round(S, 4)})
+        return out
+
+    def s_at(curve, mo):
+        v = [p["survival"] for p in curve if p["month"] <= mo]
+        return v[-1] if v else 1.0
+
+    amts = sorted(a for _, _, a in rows)
+    n = len(amts) or 1
+    t1, t2 = amts[n // 3], amts[2 * n // 3]
+    tier = lambda a: "small" if a <= t1 else "medium" if a <= t2 else "large"
+    by = {"small": [], "medium": [], "large": []}
+    for m, e, a in rows:
+        by[tier(a)].append((m, e))
+    overall = km([(m, e) for m, e, _ in rows])
+    by_tier = {k: km(v) for k, v in by.items()}
+    summary = [{"group": "all", "s12": s_at(overall, 12), "s24": s_at(overall, 24)}]
+    for k in ("small", "medium", "large"):
+        summary.append({"group": k, "s12": s_at(by_tier[k], 12), "s24": s_at(by_tier[k], 24)})
+    _SURV_CACHE["data"] = {"overall": overall, "by_tier": by_tier, "summary": summary,
+                           "observed_to": OBS.isoformat()}
+    return _SURV_CACHE["data"]

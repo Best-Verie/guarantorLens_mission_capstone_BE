@@ -125,6 +125,19 @@ class ShapContribution(BaseModel):
     plain: Optional[str] = None  # plain-language explanation of this driver
 
 
+class BorrowerSegment(BaseModel):
+    """KMeans borrower type (unsupervised); context, not a risk score."""
+    id: int
+    description: str
+    segment_write_off_rate: Optional[float] = None
+
+
+class AnomalyFlag(BaseModel):
+    """Isolation Forest 'how unusual is this application' flag."""
+    unusual: bool
+    score: float
+
+
 class AssessResponse(BaseModel):
     risk_score: int          # 0-100
     band: str                # "Low" | "Medium" | "High"
@@ -137,6 +150,8 @@ class AssessResponse(BaseModel):
     flags: List[str]         # plain-language guarantor-network flags
     network: NetworkInfo
     uids: dict = {}          # account number -> opaque url id (borrower + guarantors)
+    segment: Optional[BorrowerSegment] = None   # borrower type (KMeans, unsupervised)
+    unusual: Optional[AnomalyFlag] = None        # unusual-application flag (Isolation Forest)
 
 
 # --- insights --------------------------------------------------------------
@@ -149,6 +164,7 @@ class WatchlistItem(BaseModel):
     amount: float
     days_in_arrears: int
     backed_by_defaulter: bool
+    reason: str = ""   # strongest available risk signal (why this loan is at risk)
 
 
 class SuperGuarantor(BaseModel):
@@ -309,6 +325,8 @@ class ApplicationOut(BaseModel):
     probability: Optional[float] = None
     reasons: list = []
     flags: List[str] = []
+    segment: Optional[BorrowerSegment] = None
+    unusual: Optional[AnomalyFlag] = None
     source: Optional[str] = None
     status: str
     escalation_note: Optional[str] = None

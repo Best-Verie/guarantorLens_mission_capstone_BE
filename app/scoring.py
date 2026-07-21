@@ -1073,6 +1073,13 @@ def _assess_core(amount, savings, salary, disb_date, guarantor_ids, borrower_id=
     recommendations = _recommendations(amount, savings, salary, guarantor_ids, borrower_id, band)
     brief = _decision_brief(amount, savings, salary, guarantor_ids, borrower_id, band)
 
+    # Extra per-application models (borrower segment + unusual-application flag). Context only,
+    # loaded from a separate bundle; return None-safe so a missing bundle just omits the fields.
+    from . import extra
+    _ng = len(guarantor_ids or [])
+    segment = extra.segment(amount, savings, salary, _ng)
+    unusual = extra.anomaly(amount, savings, salary, _ng)
+
     return {
         "risk_score": _display_for_band(proba, band),
         "band": band,
@@ -1091,4 +1098,6 @@ def _assess_core(amount, savings, salary, disb_date, guarantor_ids, borrower_id=
         },
         # opaque url ids for the borrower + guarantors, so links never expose account numbers
         "uids": {r: member_uid(r) for r in ([borrower_id] + list(guarantor_ids)) if r},
+        "segment": segment,
+        "unusual": unusual,
     }

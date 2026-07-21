@@ -28,6 +28,10 @@ def _ensure_columns():
     if "guarantor_overrides" not in existing:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE applications ADD COLUMN guarantor_overrides TEXT"))
+    for col in ("segment", "unusual"):
+        if col not in existing:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE applications ADD COLUMN {col} TEXT"))
 
 
 @asynccontextmanager

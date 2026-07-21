@@ -47,6 +47,8 @@ def _app_out(a: Application) -> dict:
         "risk_score": a.risk_score, "band": a.band, "probability": a.probability,
         "reasons": json.loads(a.reasons) if a.reasons else [],
         "flags": json.loads(a.flags) if a.flags else [],
+        "segment": json.loads(a.segment) if a.segment else None,
+        "unusual": json.loads(a.unusual) if a.unusual else None,
         "source": a.source, "status": a.status, "escalation_note": a.escalation_note,
         "created_at": _iso(a.created_at),
         "recommendations": [_rec_out(r) for r in a.recommendations],
@@ -74,6 +76,8 @@ def create_application(body: ApplicationCreate, db: Session = Depends(get_db),
         guarantor_overrides=json.dumps(body.guarantor_overrides) if body.guarantor_overrides else None,
         risk_score=result["risk_score"], band=result["band"], probability=result["probability"],
         reasons=json.dumps(result["reasons"]), flags=json.dumps(result["flags"]),
+        segment=json.dumps(result.get("segment")) if result.get("segment") else None,
+        unusual=json.dumps(result.get("unusual")) if result.get("unusual") else None,
         source=result["source"], status="assessed",
     )
     db.add(app_row); db.commit(); db.refresh(app_row)
