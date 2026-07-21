@@ -244,12 +244,18 @@ def survival(user: User = Depends(get_current_user)):
         rows.append((months, 1 if ln.get("label") == 1 else 0, ln.get("amount") or 0))
 
     def km(sub):
+        # Trim the tail where too few loans are still at risk: at large months-on-book only a handful
+        # of the earliest loans remain, so a single write-off makes the curve plunge (a Kaplan-Meier
+        # small-sample artifact). We stop once the at-risk set falls below 50 to keep the curve honest.
         S, out = 1.0, []
         for t in sorted({m for m, _ in sub}):
+            if t > 24:          # cap at the 24-month window: beyond it only the earliest cohort
+                break            # remains at risk, so the curve is vintage-biased, not representative
             at_risk = sum(1 for m, _ in sub if m >= t)
+            if at_risk < 50:
+                break
             dead = sum(1 for m, e in sub if m == t and e == 1)
-            if at_risk:
-                S *= (1 - dead / at_risk)
+            S *= (1 - dead / at_risk)
             out.append({"month": int(t), "survival": round(S, 4)})
         return out
 

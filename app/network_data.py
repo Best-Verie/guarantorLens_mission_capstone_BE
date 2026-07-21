@@ -188,7 +188,7 @@ def watchlist(members: dict, min_days: int = 90, limit: int = 300) -> list:
             if backed_by_defaulter:
                 reason = "Backed by a written-off member"
             elif b.get("ever_defaulted") == 1:
-                reason = "Borrower written off before"
+                reason = "Borrower had an earlier loan written off"
             elif any((members.get(g, {}).get("loans_backed") or 0) >= 5 for g in gids):
                 reason = "Over-committed guarantor"
             elif bsav is not None and amt and amt / (bsav + 1) >= 3:
