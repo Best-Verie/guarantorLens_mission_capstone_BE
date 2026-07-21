@@ -130,19 +130,42 @@ The recommendation endpoint returns **403** for a non-manager, so an officer can
 
 ## Tests
 
-Unit tests cover the scoring logic; integration tests hit the running API with auth.
+The suite is **28 tests across 5 categories** (unit, validation, integration, functional, acceptance). It needs no running server or external database: `tests/conftest.py` points the app at a throwaway SQLite file and exposes a `TestClient` plus ready-made officer and manager tokens.
+
+### How to run
 
 ```bash
+# 1. install the test-only dependencies (pytest, httpx)
 pip install -r requirements-dev.txt
+
+# 2. run the whole suite FROM THE REPO ROOT
 python -m pytest
 ```
 
-What they lock in:
+> Run it as `python -m pytest`, **not** bare `pytest`. The `python -m` form puts the repo root on the path so the `app` package imports; the bare command fails with `ModuleNotFoundError: No module named 'app'`.
 
-- **Unit** (`tests/test_scoring_unit.py`) — band boundaries; the display score aligns with the band and is monotonic in probability; two defaulter guarantors escalate the band to High; metamorphic sanity (more savings never raises risk, a bigger loan never lowers it); the `assess()` response shape.
-- **Integration** (`tests/test_api_integration.py`) — health; auth required; assess-risk returns a valid band and score; a well-covered loan scores no higher than a thin one; **an officer is blocked (403) from recording a recommendation** while a manager succeeds.
+More ways to run:
 
-Because the tests import the real model bundle, they double as a **deployment smoke test**: if the scikit-learn version ever drifts and the model can't load, the assess tests catch it.
+```bash
+python -m pytest -v                                  # verbose: list every test name
+python -m pytest tests/test_validation.py            # one category (file)
+python -m pytest tests/test_scoring_unit.py -v        # one file, verbose
+python -m pytest -k "recommendation"                 # only tests matching a keyword
+python -m pytest tests/test_scoring_unit.py::test_band_boundaries   # a single test
+python -m pytest --collect-only -q                   # list tests without running
+```
+
+### What each category locks in
+
+| Category | File | Tests | Covers |
+| --- | --- | --- | --- |
+| Unit | `tests/test_scoring_unit.py` | 8 | Band boundaries; display score aligns with the band and is monotonic in probability; two written-off guarantors escalate the band to High; metamorphic sanity (more savings never raises risk, a bigger loan never lowers it); the `assess()` response shape. |
+| Validation | `tests/test_validation.py` | 5 | Malformed / out-of-range requests are rejected with clear errors; required fields (borrower, at least one guarantor) are enforced. |
+| Integration | `tests/test_api_integration.py` | 6 | Health; auth required; `/assess-risk` returns a valid band and score; a well-covered loan scores no higher than a thin one; **an officer is blocked (403) from recording a recommendation** while a manager succeeds. |
+| Functional | `tests/test_functional_cases.py` | 6 | End-to-end scenarios across the risk spectrum produce the expected bands and flags (e.g. a loan backed by a written-off member is flagged). |
+| Acceptance | `tests/test_acceptance.py` | 3 | User-story criteria: officer proposes and escalates, manager reviews and records a recommendation, and every assessment returns a plain-language explanation. |
+
+Because the tests import the **real model bundle**, they double as a **deployment smoke test**: if the scikit-learn version ever drifts and the model can't unpickle, the assess tests fail instead of the API silently dropping to the rule-based fallback.
 
 ---
 

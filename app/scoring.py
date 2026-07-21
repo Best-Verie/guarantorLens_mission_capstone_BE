@@ -26,6 +26,12 @@ LOANS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_loans.json")
 _DEFAULT_BANDS = {"medium": 0.30, "high": 0.60}
 _DEFAULT_FLAGS = {"over_committed_loads": 5, "high_default_community": 0.12}
 
+# Display floors: the tool never shows a literal 0% / 0-of-100. No model can honestly promise
+# zero default risk, so the smallest a displayed assessment can read is 1/100 and 0.1%.
+# These are display-only; the raw calibrated probability is still used for banding and ranking.
+_MIN_DISPLAY_SCORE = 1
+_MIN_DISPLAY_PROB = 0.001
+
 
 def _mkey(m):
     """Member id under either the master ('member_id') or simple ('member') schema."""
@@ -295,11 +301,14 @@ def _display_score(p: float) -> int:
     The map is monotonic in p, so a higher default probability always shows a higher score."""
     m, h = BANDS["medium"], BANDS["high"]
     if p < m:
-        return int(round(39 * p / m)) if m > 0 else 0
-    if p < h:
-        return int(round(40 + 29 * (p - m) / (h - m))) if h > m else 55
-    cap = max(h * 3.0, 0.60)     # probability at which the score saturates near 100
-    return int(round(70 + 30 * min(1.0, (p - h) / (cap - h)))) if cap > h else 100
+        s = int(round(39 * p / m)) if m > 0 else 0
+    elif p < h:
+        s = int(round(40 + 29 * (p - m) / (h - m))) if h > m else 55
+    else:
+        cap = max(h * 3.0, 0.60)     # probability at which the score saturates near 100
+        s = int(round(70 + 30 * min(1.0, (p - h) / (cap - h)))) if cap > h else 100
+    # never show a literal 0/100: the model does not claim zero risk.
+    return max(_MIN_DISPLAY_SCORE, s)
 
 
 _BAND_ORDER = ["Low", "Medium", "High"]
@@ -1067,7 +1076,7 @@ def _assess_core(amount, savings, salary, disb_date, guarantor_ids, borrower_id=
     return {
         "risk_score": _display_for_band(proba, band),
         "band": band,
-        "probability": round(proba, 4),
+        "probability": max(round(proba, 4), _MIN_DISPLAY_PROB),
         "source": source,
         "brief": brief,
         "reasons": reasons,

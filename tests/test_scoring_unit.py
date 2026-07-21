@@ -24,7 +24,7 @@ def test_band_boundaries():
 def test_display_score_aligns_with_bands():
     """A High probability must never read as a low number, and vice-versa."""
     m, h = sc.BANDS["medium"], sc.BANDS["high"]
-    assert sc._display_score(0.0) == 0
+    assert sc._display_score(0.0) == sc._MIN_DISPLAY_SCORE   # display floor: never a literal 0/100
     assert sc._display_score(m / 2) < 40            # deep Low
     assert 40 <= sc._display_score((m + h) / 2) < 70  # mid Medium
     assert sc._display_score(h) >= 70               # High starts at 70
@@ -35,6 +35,13 @@ def test_display_score_is_monotonic():
     scores = [sc._display_score(p / 100) for p in range(0, 101)]
     assert scores == sorted(scores)                 # never decreases as p rises
     assert 0 <= min(scores) and max(scores) <= 100
+
+
+def test_display_never_zero():
+    """The tool must never show a literal 0/100 or 0% - no model claims zero default risk."""
+    assert sc._display_score(0.0) >= sc._MIN_DISPLAY_SCORE >= 1
+    # even an all-but-impossible loan floors at the minimum display score
+    assert min(sc._display_score(p / 1000) for p in range(0, 5)) >= sc._MIN_DISPLAY_SCORE
 
 
 # ---- guarantor-network band overlay ----------------------------------------
