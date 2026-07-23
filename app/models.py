@@ -95,6 +95,8 @@ class Member(Base):
     ever_defaulted = Column(Integer, nullable=True, default=0)
     loans_backed = Column(Integer, nullable=True, default=0)
     opening_date = Column(String(20), nullable=True)
+    community_id = Column(String(40), nullable=True, index=True)   # Louvain guarantee community
+    community_default_rate = Column(Float, nullable=True)          # that community's write-off rate
 
 
 class Loan(Base):

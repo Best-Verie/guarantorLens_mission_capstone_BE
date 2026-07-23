@@ -16,7 +16,8 @@ ARTIFACT_DIR = os.path.join(os.path.dirname(__file__), "artifacts")
 MEMBERS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_members.json")
 LOANS_PATH = os.path.join(ARTIFACT_DIR, "guarantorlens_loans.json")
 
-_MEMBER_COLS = ("member_id", "branch", "savings", "salary", "ever_defaulted", "loans_backed", "opening_date")
+_MEMBER_COLS = ("member_id", "branch", "savings", "salary", "ever_defaulted", "loans_backed", "opening_date",
+                "community_id", "community_default_rate")
 _LOAN_COLS = ("loan_key", "borrower", "amount", "disb_date", "branch", "label", "outcome",
               "days_in_arrears", "payment_status", "troubled")
 
@@ -73,10 +74,17 @@ def _seed(db, members_data, loans_data):
 
 
 def ensure_seeded():
-    """Create the tables and, if the members table is empty, seed from the JSON artifacts."""
+    """Create the tables and seed from the JSON artifacts if the members table is empty, or if it
+    predates the guarantee-community columns (a one-time re-seed to backfill community_id)."""
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
-        if db.query(Member.member_id).first() is None:
+        empty = db.query(Member.member_id).first() is None
+        try:
+            needs_community = (not empty) and db.query(Member.member_id).filter(
+                Member.community_id.isnot(None)).first() is None
+        except Exception:
+            needs_community = False   # column not migrated yet; main._ensure_columns adds it first
+        if empty or needs_community:
             _seed(db, _read_json(MEMBERS_PATH), _read_json(LOANS_PATH))
 
 

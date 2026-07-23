@@ -33,6 +33,16 @@ def _ensure_columns():
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE applications ADD COLUMN {col} TEXT"))
 
+    # guarantee-community columns on members (added for the Insights communities view)
+    if "members" in insp.get_table_names():
+        mcols = {c["name"] for c in insp.get_columns("members")}
+        if "community_id" not in mcols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE members ADD COLUMN community_id VARCHAR(40)"))
+        if "community_default_rate" not in mcols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE members ADD COLUMN community_default_rate FLOAT"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
