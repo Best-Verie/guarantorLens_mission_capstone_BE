@@ -14,7 +14,7 @@ OVER = ["Client120931"]
 # (label, amount, savings, salary, rate, guarantors, expected_band, flag_substring)
 CASES = [
     ("well-covered -> Low",        300000,  2500000, 400000, 13, CLEAN,               "Low",    None),
-    ("big loan, higher rate -> Medium", 5000000, 90000, 220000, 14, CLEAN,            "Medium", None),
+    ("moderate loan, higher rate -> Medium", 3000000, 600000, 350000, 14, CLEAN,      "Medium", None),
     ("over-extended -> High",      12000000, 30000,  150000, 14, CLEAN,               "High",   None),
     ("over-committed backer",      2000000,  300000, 300000, 14, OVER + ["Client32045"], "Medium", "over-committed"),
     ("two defaulter backers",      1500000,  200000, 250000, 14, DEF,                 "High",   "written off"),

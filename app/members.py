@@ -40,7 +40,15 @@ def member_examples(user: User = Depends(get_current_user)):
             if r["risk_score"] >= 60 or checked >= 400:   # a clear High, model + band agree
                 break
         _SAMPLE_CACHE["data"] = best[1] if best else None
-    return {"member_ids": ids, "sample": _SAMPLE_CACHE["data"]}
+    # An over-committed guarantor (the member who backs the most loans) so a demo naturally
+    # triggers the over-committed flag when this id is added as a guarantor.
+    th = scoring.FLAG_TH.get("over_committed_loads", 5)
+    over_id, over_n = None, th - 1
+    for _mid, _m in scoring.MEMBERS.items():
+        _n = _m.get("loans_backed") or 0
+        if _n > over_n:
+            over_id, over_n = _mid, _n
+    return {"member_ids": ids, "sample": _SAMPLE_CACHE["data"], "over_committed_id": over_id}
 
 
 @router.get("/members")
