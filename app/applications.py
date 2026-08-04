@@ -12,15 +12,21 @@ from sqlalchemy.orm import Session
 from . import scoring
 from .auth import get_current_user
 from .db import get_db
-from .models import Application, Recommendation, User
+from .models import Application, AuditLog, Recommendation, User
 from .schema import (
     ApplicationCreate, ApplicationListItem, ApplicationOut, ApplicationStats,
-    EscalateRequest, RecommendationCreate, RecommendationOut,
+    AuditLogOut, EscalateRequest, RecommendationCreate, RecommendationOut,
 )
 
 router = APIRouter(tags=["applications"])
 
 MANAGER_ROLES = {"credit_manager", "admin"}
+
+
+def _record_audit(db: Session, user: User, action: str, app: Application, detail: dict) -> None:
+    """Append one immutable audit-log row for a decision or override. Never updates."""
+    db.add(AuditLog(application_id=app.id, actor_id=user.id, actor_name=user.full_name,
+                    actor_role=user.role, action=action, detail=json.dumps(detail)))
 
 
 def _is_manager(user: User) -> bool:
@@ -81,6 +87,12 @@ def create_application(body: ApplicationCreate, db: Session = Depends(get_db),
         source=result["source"], status="assessed",
     )
     db.add(app_row); db.commit(); db.refresh(app_row)
+    _record_audit(db, user, "assess", app_row, {
+        "band": app_row.band, "risk_score": app_row.risk_score, "source": app_row.source,
+        "amount": app_row.amount,
+        "guarantor_overrides": body.guarantor_overrides or None,   # what-if overrides applied at assess time
+    })
+    db.commit()
     return _app_out(app_row)
 
 
@@ -132,6 +144,7 @@ def escalate_application(app_id: int, body: EscalateRequest, db: Session = Depen
         raise HTTPException(status_code=403, detail="Not allowed.")
     a.status = "escalated"
     a.escalation_note = (body.note or "").strip() or None
+    _record_audit(db, user, "escalate", a, {"note": a.escalation_note})
     db.commit(); db.refresh(a)
     return _app_out(a)
 
@@ -154,5 +167,24 @@ def add_recommendation(app_id: int, body: RecommendationCreate, db: Session = De
                          note=(body.note or "").strip() or None)
     db.add(rec)
     a.status = "recommended"
+    _record_audit(db, user, "recommend", a, {"decision": body.decision,
+                                             "note": (body.note or "").strip() or None})
     db.commit(); db.refresh(a)
     return _app_out(a)
+
+
+@router.get("/applications/{app_id}/audit", response_model=list[AuditLogOut])
+def get_audit_log(app_id: int, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Read the append-only audit trail for an application (credit manager / admin only)."""
+    a = db.get(Application, app_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="Application not found.")
+    if not _is_manager(user) and a.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Not allowed to view this audit log.")
+    rows = (db.query(AuditLog).filter(AuditLog.application_id == app_id)
+            .order_by(AuditLog.created_at, AuditLog.id).all())
+    return [{"id": r.id, "application_id": r.application_id, "actor_name": r.actor_name,
+             "actor_role": r.actor_role, "action": r.action,
+             "detail": json.loads(r.detail) if r.detail else None,
+             "created_at": _iso(r.created_at)} for r in rows]

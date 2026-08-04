@@ -56,19 +56,20 @@ app/
   auth.py            # register / login / me / password reset (JWT)
   security.py        # password hashing, token signing
   db.py              # SQLAlchemy engine/session (DATABASE_URL)
-  models.py          # User, Application, Recommendation tables
+  models.py          # User, Application, Recommendation, AuditLog tables
   schema.py          # Pydantic request/response models
   scoring.py         # model serving: score, SHAP, flags, brief, advisor, what-if
   risk.py            # /assess-risk, /assess/suggest-guarantors
   members.py         # member list, search, detail
   network_data.py    # loan/edge tables, ego networks, portfolio rollups
   insights.py        # overview, weak-links, contagion, early-warning, communities
-  applications.py    # applications, escalate, recommendations (role-gated)
+  applications.py    # applications, escalate, recommendations, audit log (role-gated)
   admin.py           # replace model/artifacts, clear applications
   artifacts/         # guarantorlens_serving.joblib, members.json, loans.json
-tests/               # pytest unit + integration suite
+tests/               # pytest suite: unit, validation, integration, functional,
+                     #   acceptance, fallback, audit-trail
 requirements.txt     # runtime deps (note the scikit-learn pin)
-requirements-dev.txt # test-only deps (pytest, httpx)
+requirements-dev.txt # test-only deps (pytest, httpx, pytest-cov)
 ```
 
 ---
@@ -113,7 +114,7 @@ Full, interactive reference at `/docs`. Main groups:
 - **Assessment:** `POST /assess-risk`, `POST /assess/suggest-guarantors`
 - **Members:** `GET /members` (list + search), `GET /member/{ref}`, `GET /member/{ref}/contagion`
 - **Insights:** `GET /insights/overview`, `/insights/weak-links`, `/insights/early-warning`, `/insights/super-guarantors`, `/insights/communities`, `/watchlist`
-- **Applications:** `POST /applications`, `GET /applications` (+ `?escalated=true` review queue), `GET /applications/{id}`, `POST /applications/{id}/escalate`, `POST /applications/{id}/recommendations`
+- **Applications:** `POST /applications`, `GET /applications` (+ `?escalated=true` review queue), `GET /applications/{id}`, `POST /applications/{id}/escalate`, `POST /applications/{id}/recommendations`, `GET /applications/{id}/audit` (append-only decision/override log)
 - **Admin:** replace the model/artifacts, clear applications
 
 ### Roles & permissions
@@ -126,20 +127,27 @@ Full, interactive reference at `/docs`. Main groups:
 
 The recommendation endpoint returns **403** for a non-manager, so an officer cannot approve their own case. This is enforced server-side, not just hidden in the UI.
 
+### Audit log
+
+Every decision and override is written to an **append-only `audit_log` table** (`AuditLog` in `models.py`): one immutable row per action (`assess` / `escalate` / `recommend`), attributed to the acting user with name, role, a JSON detail snapshot, and a timestamp. Nothing updates or deletes these rows. A credit manager (or the owning officer) reads an application's trail at `GET /applications/{id}/audit`; there is no create/edit/delete route for the log.
+
 ---
 
 ## Tests
 
-The suite is **28 tests across 5 categories** (unit, validation, integration, functional, acceptance). It needs no running server or external database: `tests/conftest.py` points the app at a throwaway SQLite file and exposes a `TestClient` plus ready-made officer and manager tokens.
+The suite is **44 tests across 7 categories** (unit, validation, integration, functional, acceptance, fallback, audit-trail). It needs no running server or external database: `tests/conftest.py` points the app at a throwaway SQLite file and exposes a `TestClient` plus ready-made officer and manager tokens.
 
 ### How to run
 
 ```bash
-# 1. install the test-only dependencies (pytest, httpx)
+# 1. install the test-only dependencies (pytest, httpx, pytest-cov)
 pip install -r requirements-dev.txt
 
 # 2. run the whole suite FROM THE REPO ROOT
 python -m pytest
+
+# 3. with a coverage report (overall ~64%; scoring/decision path is highest)
+python -m pytest --cov=app --cov-report=term-missing
 ```
 
 > Run it as `python -m pytest`, **not** bare `pytest`. The `python -m` form puts the repo root on the path so the `app` package imports; the bare command fails with `ModuleNotFoundError: No module named 'app'`.
@@ -159,11 +167,13 @@ python -m pytest --collect-only -q                   # list tests without runnin
 
 | Category | File | Tests | Covers |
 | --- | --- | --- | --- |
-| Unit | `tests/test_scoring_unit.py` | 8 | Band boundaries; display score aligns with the band and is monotonic in probability; two written-off guarantors escalate the band to High; metamorphic sanity (more savings never raises risk, a bigger loan never lowers it); the `assess()` response shape. |
+| Unit | `tests/test_scoring_unit.py` | 9 | Band boundaries; display score aligns with the band and is monotonic in probability; two written-off guarantors escalate the band to High; metamorphic sanity (more savings never raises risk, a bigger loan never lowers it); the `assess()` response shape. |
 | Validation | `tests/test_validation.py` | 5 | Malformed / out-of-range requests are rejected with clear errors; required fields (borrower, at least one guarantor) are enforced. |
 | Integration | `tests/test_api_integration.py` | 6 | Health; auth required; `/assess-risk` returns a valid band and score; a well-covered loan scores no higher than a thin one; **an officer is blocked (403) from recording a recommendation** while a manager succeeds. |
 | Functional | `tests/test_functional_cases.py` | 6 | End-to-end scenarios across the risk spectrum produce the expected bands and flags (e.g. a loan backed by a written-off member is flagged). |
 | Acceptance | `tests/test_acceptance.py` | 3 | User-story criteria: officer proposes and escalates, manager reviews and records a recommendation, and every assessment returns a plain-language explanation. |
+| Fallback | `tests/test_fallback.py` | 5 | Model failure and graceful degradation: a missing bundle, an empty model, and a model that raises while scoring all fall back to the rule-based heuristic; the API still answers and tags the response `source="heuristic"`. |
+| Audit trail | `tests/test_audit_trail.py` | 10 | Every decision and override writes an attributed, append-only `audit_log` row (assess / escalate / recommend), captures what-if overrides, stays immutable (no edit/delete route), and enforces separation of duties. |
 
 Because the tests import the **real model bundle**, they double as a **deployment smoke test**: if the scikit-learn version ever drifts and the model can't unpickle, the assess tests fail instead of the API silently dropping to the rule-based fallback.
 

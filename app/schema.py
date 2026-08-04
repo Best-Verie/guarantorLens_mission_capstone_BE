@@ -296,6 +296,16 @@ class EscalateRequest(BaseModel):
     note: Optional[str] = None
 
 
+class AuditLogOut(BaseModel):
+    id: int
+    application_id: int
+    actor_name: Optional[str] = None
+    actor_role: Optional[str] = None
+    action: str
+    detail: Optional[dict] = None
+    created_at: str
+
+
 class ApplicationListItem(BaseModel):
     id: int
     borrower: Optional[str] = None

@@ -82,6 +82,26 @@ class Recommendation(Base):
     application = relationship("Application", back_populates="recommendations")
 
 
+class AuditLog(Base):
+    """Append-only audit log: one immutable row per lending decision or override.
+
+    Every state-changing action on an application (initial assessment, escalation
+    override, and each recommendation decision) writes exactly one row here, capturing
+    who acted, in what role, what action, and a JSON detail snapshot. Nothing in the
+    codebase updates or deletes these rows, so the log only ever grows.
+    """
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    application_id = Column(Integer, ForeignKey("applications.id"), nullable=False, index=True)
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    actor_name = Column(String(120), nullable=True)
+    actor_role = Column(String(40), nullable=True)
+    action = Column(String(20), nullable=False)         # assess / escalate / recommend
+    detail = Column(Text, nullable=True)                # JSON snapshot of the action
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
 # --- Reference dataset (the anonymised SACCO member/loan/guarantee network) ------------
 # Seeded from the JSON artifacts and used read-only for scoring and the network views.
 
